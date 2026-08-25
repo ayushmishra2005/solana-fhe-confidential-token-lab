@@ -12,12 +12,17 @@ The Phase 1 answer is a split architecture:
 - off-chain TFHE-rs evaluation of a fixed encrypted predicate
 - authenticated asynchronous finalization of an encrypted Boolean handle
 
-Phase 1 uses Zama's open-source TFHE-rs library for the actual
-homomorphic computation performed by the native Rust worker.
+Phase 1 uses Zama's open-source TFHE-rs library as the actual FHE
+implementation in the native Rust worker, not as an architectural
+reference. The worker evaluates the encrypted predicate with TFHE-rs;
+the SVM coordinator never runs TFHE.
 
-This is an independent research prototype built with Solana/Anchor and Zama's
-TFHE-rs. It has not been audited and is not intended for production or
-real-value custody.
+That split path was completed end-to-end on Solana Devnet on 2026-08-25.
+See [Live Devnet Validation](#live-devnet-validation).
+
+This is an independent research prototype built with Solana/Anchor and
+Zama's TFHE-rs. It has not been audited and is not intended for
+production or real-value custody.
 
 ## Why this project exists
 
@@ -65,6 +70,7 @@ Implemented in this tree:
 - local content-addressed ciphertext store
 - owner-side decryption
 - protocol, worker, coordinator, and end-to-end tests
+- recorded Solana Devnet end-to-end validation (2026-08-25)
 
 ## Architecture
 
@@ -113,8 +119,100 @@ Data flow:
 4. The worker loads blobs by committed hash, checks metadata, evaluates
    the fixed circuit, stores the encrypted Boolean, and signs the
    canonical result payload.
-5. A relayer submits native Ed25519 verify plus `finalize`.
+5. A finalizer/relayer submits native Ed25519 verify plus `finalize`.
 6. The owner loads the result blob and decrypts with the client key.
+
+The same sequence was completed on Solana Devnet; recorded evidence is
+in [Live Devnet Validation](#live-devnet-validation).
+
+## Live Devnet Validation
+
+Successfully validated end-to-end on Solana Devnet on 2026-08-25.
+
+Zama TFHE-rs performed the actual off-chain homomorphic evaluation. The
+SVM-native coordinator handled authorization, state binding, lifecycle,
+and finalization. Heavy FHE computation remained off-chain.
+
+```text
+plaintext inputs
+    ↓
+local TFHE encryption
+    ↓
+Solana Devnet Config + ConfidentialAccount
+    ↓
+Request PDA
+    ↓
+authoritative request reconstruction from on-chain state
+    ↓
+off-chain Zama TFHE-rs evaluation
+    ↓
+encrypted FheBool + worker Ed25519 signature
+    ↓
+native Solana Ed25519 verification + coordinator finalize
+    ↓
+Finalized Request PDA
+    ↓
+local owner decryption
+```
+
+| Field | Value |
+| --- | --- |
+| Policy | `(balance >= amount) && (amount <= limit)` |
+| Inputs | balance = 100, amount = 25, limit = 50 |
+| Expected result | `true` |
+| Observed decrypted result | `true` |
+
+The worker signed the encrypted result. The finalizer consumed that
+worker-produced signature and did not load or re-sign with the operator
+private key. Native Ed25519 verification and coordinator `finalize`
+happened atomically in the Solana transaction.
+
+After finalization the Request PDA was fetched again and verified:
+
+- status = `Finalized`
+- `result_hash` matched
+- `result_digest` matched
+
+> Signature authenticity is not proof of correct FHE execution.
+
+The current research prototype trusts the configured FHE operator for
+computation correctness and liveness. The Ed25519 signature proves that
+the configured operator attested to the exact request/result binding; it
+does not cryptographically prove that the TFHE circuit was evaluated
+correctly.
+
+This remains an independent research prototype. It is not audited and
+is not for production or real-value use. The mint in this run is a
+synthetic identity binding, not a Token-2022 mint. No Token-2022
+settlement or value movement is implemented. The Devnet deployment
+remains upgradeable under the research deployer authority; this is
+not a production governance model.
+
+### On-chain evidence
+
+| Artifact | Devnet |
+| --- | --- |
+| Program | [`2xNTgr7PmWSQRqGcMuCVhdTQLRP8bexVHGJ2CjxiJM6X`](https://explorer.solana.com/address/2xNTgr7PmWSQRqGcMuCVhdTQLRP8bexVHGJ2CjxiJM6X?cluster=devnet) |
+| ProgramData | [`CcJyvUskFWogVNjWNJNKoRFRWV9sGP5kzCWZYmha2srY`](https://explorer.solana.com/address/CcJyvUskFWogVNjWNJNKoRFRWV9sGP5kzCWZYmha2srY?cluster=devnet) |
+| Config PDA | [`ArcJZorD7NpZgRBEmop9zvdereskEkYKUtLjCWccwpEy`](https://explorer.solana.com/address/ArcJZorD7NpZgRBEmop9zvdereskEkYKUtLjCWccwpEy?cluster=devnet) |
+| ConfidentialAccount PDA | [`3r7tdVwvFe1wJUWMff8sHrGGP3ECpCfdfitbiu5A9Gdm`](https://explorer.solana.com/address/3r7tdVwvFe1wJUWMff8sHrGGP3ECpCfdfitbiu5A9Gdm?cluster=devnet) |
+| Request PDA | [`CkEboNwFdMM3U5KtPkpFd92SxwKzFhcA5UG7Tjms4YEx`](https://explorer.solana.com/address/CkEboNwFdMM3U5KtPkpFd92SxwKzFhcA5UG7Tjms4YEx?cluster=devnet) |
+| Program deployment transaction | [`5sHnPar5AuRztnNyNmE1uvc7H9aGkHrxjzwrJhqcmN7K3LW1sucusuiTyGzWwFfK9YNV5DgiSRFtG2R7Zbf5VNF8`](https://explorer.solana.com/tx/5sHnPar5AuRztnNyNmE1uvc7H9aGkHrxjzwrJhqcmN7K3LW1sucusuiTyGzWwFfK9YNV5DgiSRFtG2R7Zbf5VNF8?cluster=devnet) |
+| Initialize transaction | [`2ZD98MmyUYDeGLJuZwULrEzAdfcwx2bRntpNR84UxVExTEvd5ejAJe6vtVMNnNat8bcbTpX41eMgmSr8o99dJnN7`](https://explorer.solana.com/tx/2ZD98MmyUYDeGLJuZwULrEzAdfcwx2bRntpNR84UxVExTEvd5ejAJe6vtVMNnNat8bcbTpX41eMgmSr8o99dJnN7?cluster=devnet) |
+| Create-account transaction | [`2LMjwgKk9p8ih3d4ugSZgTFDipJcRovL9KbshPEy7XfoKguKneGqShzoY4B5fK2G7nNhoiJg9pQjFih3xx6vCsjM`](https://explorer.solana.com/tx/2LMjwgKk9p8ih3d4ugSZgTFDipJcRovL9KbshPEy7XfoKguKneGqShzoY4B5fK2G7nNhoiJg9pQjFih3xx6vCsjM?cluster=devnet) |
+| Submit transaction | [`5grJ3jWzfmbtBDiPhtdtm52TqPW4RLDsHup1iSTCaKQ82a9pTwiUuZfU5DUhdY7hRKqCdAJjBi4NppKZfowcpgMv`](https://explorer.solana.com/tx/5grJ3jWzfmbtBDiPhtdtm52TqPW4RLDsHup1iSTCaKQ82a9pTwiUuZfU5DUhdY7hRKqCdAJjBi4NppKZfowcpgMv?cluster=devnet) |
+| Finalize transaction | [`uR1e8UhcYskWhjpC9xBPc8QVXTnHkPtmyRQmHkEG39hqtmQWKX29ABikF1QwUPc49MbeddAGutMuvemRb5Z3Z6V`](https://explorer.solana.com/tx/uR1e8UhcYskWhjpC9xBPc8QVXTnHkPtmyRQmHkEG39hqtmQWKX29ABikF1QwUPc49MbeddAGutMuvemRb5Z3Z6V?cluster=devnet) |
+| Result hash | `1c329fbf12d734f2250b165e05bcfc7b9015125de0c982eefd4a2e07555db5cc` |
+| Result digest | `c7b8cb49b35a70b20d6a6f23a9ba8e0dbf78dd59afb6e457f9dbddb33c065162` |
+
+### What Devnet proves
+
+| Proves | Does not prove |
+| --- | --- |
+| Real-cluster encrypt → submit → TFHE-rs evaluate → finalize → decrypt | Trustless or verifiable FHE execution |
+| Coordinator authorization, binding, lifecycle, and atomic finalize | Token-2022 interoperability or value movement |
+| Finalizer consumes the worker-produced signature as-is and never loads the operator private key | Audited or production-ready security |
+| Request PDA `Finalized` with matching result hash and digest | Endorsement by Solana, Zama, or OpenZeppelin |
 
 ## Request Lifecycle
 
@@ -307,9 +405,10 @@ LiteSVM only. A separate `devnet` subcommand set drives the deployed
 coordinator over real Solana RPC instead. It is transport/RPC work only:
 the on-chain program, account layouts, and digest scheme are unchanged.
 
-The coordinator program has been deployed to Devnet. A successful
-client-driven Devnet end-to-end run has not been completed or recorded
-yet; the commands below are the intended manual path, not a verified E2E.
+The coordinator is deployed on Devnet. A client-driven end-to-end run
+completed on 2026-08-25; recorded addresses, transactions, and results
+are in [Live Devnet Validation](#live-devnet-validation). The commands
+below are the manual path used for that run.
 
 The "mint" used by `devnet initialize` is a synthetic Phase-1 identity
 binding (a freshly generated pubkey used only to derive PDAs) and not a
@@ -413,7 +512,8 @@ cargo run -p confidential-lab --release -- measure
 - Fixed circuit only. The worker rejects unknown operations.
 - No Token-2022 CPI, no confidential transfer, no value movement.
 - No threshold KMS, no coprocessor quorum, no durable availability.
-- `demo` and tests use LiteSVM, not a public cluster.
+- `demo` and tests use LiteSVM. A recorded Solana Devnet end-to-end
+  run is in [Live Devnet Validation](#live-devnet-validation).
 - Host rustc and SBF rustc differ; SBF builds go through
   `cargo-build-sbf`, not the workspace host toolchain.
 
@@ -450,6 +550,7 @@ Implemented in this repository.
 - replay and substitution checks
 - owner decryption of the finalized Boolean
 - adversarial coordinator tests and one end-to-end path
+- recorded Solana Devnet end-to-end validation
 
 ### Phase 2 — Token-2022 Interoperability
 
