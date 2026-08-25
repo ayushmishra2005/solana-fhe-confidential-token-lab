@@ -12,6 +12,9 @@ The Phase 1 answer is a split architecture:
 - off-chain TFHE-rs evaluation of a fixed encrypted predicate
 - authenticated asynchronous finalization of an encrypted Boolean handle
 
+Phase 1 uses Zama's open-source TFHE-rs library for the actual
+homomorphic computation performed by the native Rust worker.
+
 This project is not affiliated with or endorsed by Solana Foundation,
 Zama, or OpenZeppelin. It is not a Solana, SPL, or Zama standard. It
 has not been audited and is not intended for production or real-value
@@ -319,14 +322,16 @@ Verified counts on this machine:
 - 9 `confidential-protocol` tests: canonical request/result encoding,
   domain separation, per-field digest changes, golden vectors, blob
   metadata checks
-- 9 `fhe-worker` tests: real TFHE policy cases (100/25/50 true,
+- 12 `fhe-worker` tests: real TFHE policy cases (100/25/50 true,
   20/25/50 false, 100/60/50 false), equality and zero boundaries,
   safe serialize/deserialize, modified and invalid ciphertext, wrong
-  parameter metadata
+  parameter metadata, and server-key commitment checks
 - 19 `phase1-tests` program tests: initialize, create, submit,
   finalize, cancel, expire, and substitution/replay rejects
 - 1 end-to-end test: encrypt, submit, TFHE evaluate, sign, finalize,
   owner decrypt for allowed and both denied cases
+- 1 coordinator `test_id` unit test
+- 42 tests total
 
 ## Measurements
 
