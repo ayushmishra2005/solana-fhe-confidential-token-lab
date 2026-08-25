@@ -9,6 +9,10 @@ pub fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         .map(|pair| pair[1].as_str())
 }
 
+pub fn has_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
 pub fn require_flag(args: &[String], name: &str) -> Result<String, LabError> {
     flag(args, name)
         .map(str::to_string)

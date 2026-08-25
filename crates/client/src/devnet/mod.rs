@@ -5,6 +5,7 @@
 pub mod args;
 pub mod commands;
 pub mod decode;
+pub mod finalize;
 pub mod rpc;
 pub mod state;
 

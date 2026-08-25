@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub mod devnet;
+pub mod relayer;
 
 use anchor_lang::{InstructionData, ToAccountMetas};
 use confidential_coordinator::accounts as accs;

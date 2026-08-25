@@ -56,6 +56,9 @@ fn usage() {
     eprintln!(
         "       confidential-lab [--data-dir .data] devnet <initialize|create-account|submit|fetch-request|finalize|inspect>"
     );
+    eprintln!(
+        "       confidential-lab [--data-dir .data] devnet finalize [--transport direct|openzeppelin]"
+    );
 }
 
 fn cmd_devnet(data_dir: &Path, args: &[String]) -> Result<(), LabError> {

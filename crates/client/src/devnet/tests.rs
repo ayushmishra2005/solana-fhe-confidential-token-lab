@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anchor_lang::AccountSerialize;
+use base64::Engine as _;
 use confidential_coordinator::state::{ConfidentialAccount, Config, Request};
 use confidential_protocol as protocol;
 use serde_json::json;
@@ -13,12 +14,20 @@ use crate::devnet::decode::{
     reconstruct_request_binding, result_binding_from_authoritative, validate_finalize_consistency,
     verify_ed25519, verify_request_accounts, ParsedResultFile, VerifiedRequest,
 };
+use crate::devnet::finalize::{
+    ed25519_instruction_contains_operator, verify_authoritative_finalized, FinalizeTransport,
+    PreparedFinalize,
+};
 use crate::devnet::rpc::rpc_error_to_lab_error;
 use crate::devnet::state::{
     default_keypair_path_with_home, expand_tilde_with_home, state_path, DevnetState,
     DEFAULT_DEVNET_RPC_URL,
 };
-use crate::PROGRAM_ID;
+use crate::relayer::{
+    instruction_to_spec, instructions_to_specs, require_ed25519_immediately_before_finalize,
+    require_ed25519_immediately_before_finalize_specs, ED25519_PROGRAM_ID_STR,
+};
+use crate::{finalize_ixs_with_signature, PROGRAM_ID};
 
 const BALANCE: [u8; 32] = [0xb1; 32];
 const AMOUNT: [u8; 32] = [0xa1; 32];
@@ -194,6 +203,8 @@ fn devnet_state_roundtrip_has_no_private_key_bytes() {
         payer_keypair_path: Some("~/.config/solana/id.json".to_string()),
         authority_keypair_path: Some("/tmp/authority.json".to_string()),
         owner_keypair_path: Some("/tmp/owner.json".to_string()),
+        latest_relayer_transaction_id: None,
+        latest_solana_signature: None,
     };
     state.save(&dir).unwrap();
     let loaded = DevnetState::load(&dir).unwrap();
@@ -232,10 +243,22 @@ fn devnet_state_roundtrip_has_no_private_key_bytes() {
     for key in &keys {
         let lower = key.to_ascii_lowercase();
         assert!(
-            !lower.contains("secret") && !lower.contains("private") && !lower.ends_with("_bytes"),
+            !lower.contains("secret")
+                && !lower.contains("private")
+                && !lower.contains("api_key")
+                && !lower.contains("authorization")
+                && !lower.ends_with("_bytes"),
             "unexpected secret-like field {key}"
         );
     }
+    assert!(
+        !raw.contains("api_key"),
+        "serialized state must not mention api_key"
+    );
+    assert!(
+        !raw.contains("OPENZEPPELIN_RELAYER_API_KEY"),
+        "serialized state must not mention the Relayer API key env var"
+    );
     for path_field in [
         "payer_keypair_path",
         "authority_keypair_path",
@@ -527,4 +550,192 @@ fn rpc_error_without_logs_still_includes_code_and_message() {
         err.to_string(),
         "getAccountInfo failed (code -32602): Invalid params"
     );
+}
+
+#[test]
+fn finalize_transport_defaults_to_direct_and_rejects_api_key_flag() {
+    assert_eq!(
+        FinalizeTransport::from_args(&[]).unwrap(),
+        FinalizeTransport::Direct
+    );
+    assert_eq!(
+        FinalizeTransport::from_args(&["--transport".into(), "direct".into()]).unwrap(),
+        FinalizeTransport::Direct
+    );
+    match FinalizeTransport::from_args(&[
+        "--transport".into(),
+        "openzeppelin".into(),
+        "--relayer-url".into(),
+        "http://127.0.0.1:8080".into(),
+        "--relayer-id".into(),
+        "solana-devnet".into(),
+    ])
+    .unwrap()
+    {
+        FinalizeTransport::OpenZeppelin {
+            relayer_url,
+            relayer_id,
+        } => {
+            assert_eq!(relayer_url, "http://127.0.0.1:8080");
+            assert_eq!(relayer_id, "solana-devnet");
+        }
+        FinalizeTransport::Direct => panic!("expected openzeppelin"),
+    }
+    let err = FinalizeTransport::from_args(&["--api-key".into(), "secret".into()]).unwrap_err();
+    assert!(
+        err.to_string().contains("OPENZEPPELIN_RELAYER_API_KEY"),
+        "{err}"
+    );
+    assert!(!err.to_string().contains("secret"), "{err}");
+}
+
+#[test]
+fn api_key_never_appears_in_serialized_devnet_state() {
+    let dir = std::env::temp_dir().join(format!(
+        "ctl-devnet-relayer-state-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let planted = "planted-relayer-api-key-should-never-be-written";
+    let state = DevnetState {
+        latest_relayer_transaction_id: Some("job-123".to_string()),
+        latest_solana_signature: Some("sig-abc".to_string()),
+        ..Default::default()
+    };
+    state.save(&dir).unwrap();
+    let raw = std::fs::read_to_string(state_path(&dir)).unwrap();
+    assert!(raw.contains("job-123"));
+    assert!(!raw.contains(planted));
+    assert!(!raw.contains("api_key"));
+    assert!(!raw.contains("OPENZEPPELIN_RELAYER_API_KEY"));
+    assert!(!raw.contains("Authorization"));
+    let loaded = DevnetState::load(&dir).unwrap();
+    assert_eq!(
+        loaded.latest_relayer_transaction_id.as_deref(),
+        Some("job-123")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn prepared_from_fixture(fixture: &Fixture, parsed: &ParsedResultFile) -> PreparedFinalize {
+    let binding = result_binding_from_authoritative(&fixture.binding(), parsed);
+    PreparedFinalize {
+        request_address: fixture.request_address,
+        config_address: fixture.config_address,
+        account_address: fixture.account_address,
+        prior_state_version: fixture.account.state_version,
+        parsed: *parsed,
+        binding,
+        result_hash: parsed.result_hash,
+        result_digest: protocol::result_digest(&binding),
+    }
+}
+
+#[test]
+fn finalize_instruction_pair_survives_relayer_serialization() {
+    let fixture = Fixture::pending();
+    let (binding, parsed) = signed_result(&fixture);
+    let relayer_payer = Keypair::new().pubkey();
+    let operator = fixture.operator.pubkey();
+    assert_ne!(relayer_payer, operator);
+
+    let ixs = finalize_ixs_with_signature(
+        relayer_payer,
+        fixture.config_address,
+        fixture.account_address,
+        fixture.request_address,
+        parsed.operator,
+        parsed.signature,
+        &binding,
+    );
+    require_ed25519_immediately_before_finalize(&ixs).unwrap();
+    assert_eq!(ixs[0].program_id.to_string(), ED25519_PROGRAM_ID_STR);
+    assert_eq!(ixs[1].program_id, PROGRAM_ID);
+    assert!(ed25519_instruction_contains_operator(
+        &ixs[0],
+        &parsed.operator
+    ));
+    assert!(!ed25519_instruction_contains_operator(
+        &ixs[0],
+        &relayer_payer.to_bytes()
+    ));
+
+    let specs = instructions_to_specs(&ixs);
+    require_ed25519_immediately_before_finalize_specs(&specs).unwrap();
+    assert_eq!(specs[0].program_id, ED25519_PROGRAM_ID_STR);
+    assert_eq!(specs[1].program_id, PROGRAM_ID.to_string());
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&specs[0].data)
+            .unwrap(),
+        ixs[0].data
+    );
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(&specs[1].data)
+            .unwrap(),
+        ixs[1].data
+    );
+    assert_eq!(specs[1].accounts[0].pubkey, relayer_payer.to_string());
+    assert!(specs[1].accounts[0].is_signer);
+    assert!(specs[1].accounts[0].is_writable);
+    assert_eq!(instruction_to_spec(&ixs[1]).accounts, specs[1].accounts);
+}
+
+#[test]
+fn worker_signature_is_verified_against_config_operator_not_relayer_payer() {
+    let fixture = Fixture::pending();
+    let cached = fixture.binding();
+    let relayer_payer = Keypair::new().pubkey();
+    let mut parsed = signed_result(&fixture).1;
+    parsed.operator = relayer_payer.to_bytes();
+    let err = validate_finalize_consistency(&fixture.into_verified(), Some(&cached), &parsed)
+        .expect_err("relayer payer must not substitute for Config.operator");
+    assert!(err.to_string().contains("operator"), "{err}");
+}
+
+#[test]
+fn post_finalize_verification_is_shared_and_checks_lock_release() {
+    let fixture = Fixture::pending();
+    let (_, parsed) = signed_result(&fixture);
+    let prepared = prepared_from_fixture(&fixture, &parsed);
+
+    let mut finalized = fixture;
+    finalized.request.status = protocol::STATUS_FINALIZED;
+    finalized.request.result_hash = parsed.result_hash;
+    finalized.request.result_digest = prepared.result_digest;
+    finalized.account.pending_request = Address::default();
+    finalized.account.state_version += 1;
+    verify_authoritative_finalized(&finalized.into_verified(), &prepared).unwrap();
+
+    let mut stale = Fixture::pending();
+    let (_, parsed) = signed_result(&stale);
+    let prepared = prepared_from_fixture(&stale, &parsed);
+    stale.request.status = protocol::STATUS_FINALIZED;
+    stale.request.result_hash = parsed.result_hash;
+    stale.request.result_digest = prepared.result_digest;
+    stale.account.pending_request = stale.request_address;
+    stale.account.state_version += 1;
+    let err = verify_authoritative_finalized(&stale.into_verified(), &prepared).unwrap_err();
+    assert!(err.to_string().contains("pending_request"), "{err}");
+}
+
+#[test]
+fn prepared_finalize_uses_relayer_payer_and_keeps_operator_in_ed25519() {
+    let fixture = Fixture::pending();
+    let (_, parsed) = signed_result(&fixture);
+    let prepared = prepared_from_fixture(&fixture, &parsed);
+    let relayer = Keypair::new().pubkey();
+    let [verify_ix, finalize_ix] = prepared.instructions_for_payer(relayer).unwrap();
+    assert_eq!(finalize_ix.accounts[0].pubkey, relayer);
+    assert!(finalize_ix.accounts[0].is_signer);
+    assert!(ed25519_instruction_contains_operator(
+        &verify_ix,
+        &parsed.operator
+    ));
+    assert_ne!(relayer.to_bytes(), parsed.operator);
 }

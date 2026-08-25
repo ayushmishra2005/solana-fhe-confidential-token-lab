@@ -3,7 +3,7 @@ name = "confidential-lab"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Phase 1 client, local demo, and instruction builders."
+description = "Phase 1 client, local demo, Devnet RPC, and optional OpenZeppelin Relayer transport."
 
 [[bin]]
 name = "confidential-lab"

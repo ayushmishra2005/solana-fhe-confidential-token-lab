@@ -320,6 +320,7 @@ pub fn verify_ed25519(
 }
 
 /// Parsed `result.json` fields used by finalize. Does not load any private key.
+#[derive(Clone, Copy, Debug)]
 pub struct ParsedResultFile {
     pub result_hash: [u8; 32],
     pub request_digest: [u8; 32],

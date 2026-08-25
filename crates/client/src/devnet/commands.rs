@@ -14,17 +14,21 @@ use solana_transaction::Transaction;
 use crate::devnet::args::{flag, flag_hex32, flag_or, flag_u64_or};
 use crate::devnet::decode::{
     account_exists, derive_account, derive_config, derive_request, fetch_account,
-    fetch_and_verify_request, fetch_config, parse_address, parse_result_file, status_label,
-    validate_finalize_consistency,
+    fetch_and_verify_request, fetch_config, parse_address, status_label,
+};
+use crate::devnet::finalize::{
+    deliver_direct, deliver_openzeppelin, load_cached_request, load_parsed_result,
+    prepare_finalize, print_openzeppelin_success, resolve_request_address, FinalizeTransport,
 };
 use crate::devnet::rpc::RpcClient;
 use crate::devnet::state::{
     default_keypair_path, expand_tilde, read_keypair_file, DevnetState,
     DEFAULT_MAX_REQUEST_LIFETIME_SLOTS,
 };
+use crate::relayer::PollSettings;
 use crate::{
-    create_account_ix, data_paths, finalize_ixs_with_signature, initialize_ix, read_operator,
-    read_request_file, submit_ix, write_request_file, LabError, ParamsFile, PROGRAM_ID,
+    create_account_ix, data_paths, initialize_ix, read_operator, submit_ix, write_request_file,
+    LabError, ParamsFile, PROGRAM_ID,
 };
 
 fn signer_path(args: &[String], flag_name: &str, cached: Option<&str>) -> PathBuf {
@@ -298,94 +302,54 @@ pub fn cmd_fetch_request(data_dir: &Path, args: &[String]) -> Result<(), LabErro
 /// as-is (never re-signs, never loads the operator's private key). The
 /// signed `ResultBinding` is built from a freshly fetched on-chain Request,
 /// not from `request.json` (worker cache only).
+///
+/// `--transport direct` (default) submits over JSON-RPC. `--transport
+/// openzeppelin` delivers the same prepared instructions through OpenZeppelin
+/// Relayer. Both paths share `prepare_finalize` and post-finalize PDA checks.
 pub fn cmd_finalize(data_dir: &Path, args: &[String]) -> Result<(), LabError> {
     let mut state = DevnetState::load(data_dir)?;
+    let transport = FinalizeTransport::from_args(args)?;
     let rpc_url = flag_or(args, "--rpc-url", &state.rpc_url());
     let rpc = RpcClient::new(rpc_url.clone())?;
 
-    let payer_path = signer_path(args, "--payer", state.payer_keypair_path.as_deref());
-    let payer = read_keypair_file(&payer_path)?;
+    let parsed = load_parsed_result(data_dir)?;
+    let cached_request = load_cached_request(data_dir)?;
+    let request_address = resolve_request_address(args, &state, cached_request.as_ref())?;
+    let prepared = prepare_finalize(&rpc, request_address, cached_request.as_ref(), &parsed)?;
 
-    let paths = data_paths(data_dir);
-    let result_file: fhe_worker::ResultFile =
-        serde_json::from_slice(&std::fs::read(&paths.result).map_err(|e| {
-            LabError(format!(
-                "failed to read {}: {e} (run `evaluate` first)",
-                paths.result.display()
-            ))
-        })?)
-        .map_err(|e| LabError(e.to_string()))?;
-    let parsed = parse_result_file(&result_file)?;
-
-    let cached_request = if paths.request.exists() {
-        Some(read_request_file(&paths.request)?)
-    } else {
-        None
-    };
-
-    let request_address = match optional_address_flag(args, "--request")? {
-        Some(address) => address,
-        None => {
-            if let Some(cached) = cached_request.as_ref() {
-                Address::new_from_array(cached.request_pda)
-            } else {
-                parse_address(state.latest_request.as_deref().ok_or_else(|| {
-                    LabError(
-                        "no --request, no request.json, and no cached latest_request in \
-                         devnet-state.json"
-                            .to_string(),
-                    )
-                })?)?
-            }
+    match transport {
+        FinalizeTransport::Direct => {
+            let payer_path = signer_path(args, "--payer", state.payer_keypair_path.as_deref());
+            let payer = read_keypair_file(&payer_path)?;
+            let outcome = deliver_direct(&rpc, &prepared, &payer, send_ixs)?;
+            let signature = outcome
+                .solana_signature
+                .as_deref()
+                .unwrap_or("(not reported)");
+            println!("finalize confirmed: {signature}");
+            println!("verified on-chain: status=finalized, result_hash and result_digest match");
+            state.rpc_url = Some(rpc_url);
+            state.payer_keypair_path = Some(payer_path.display().to_string());
+            state.save(data_dir)?;
         }
-    };
-
-    let verified = fetch_and_verify_request(&rpc, request_address)?;
-    let binding = validate_finalize_consistency(&verified, cached_request.as_ref(), &parsed)?;
-    if verified.config.paused {
-        return Err(LabError(format!(
-            "config {} is paused; refusing to finalize",
-            verified.config_address
-        )));
+        FinalizeTransport::OpenZeppelin {
+            relayer_url,
+            relayer_id,
+        } => {
+            let outcome = deliver_openzeppelin(
+                &rpc,
+                &prepared,
+                &relayer_url,
+                &relayer_id,
+                &PollSettings::default(),
+            )?;
+            print_openzeppelin_success(&outcome);
+            state.rpc_url = Some(rpc_url);
+            state.latest_relayer_transaction_id = outcome.relayer_transaction_id;
+            state.latest_solana_signature = outcome.solana_signature;
+            state.save(data_dir)?;
+        }
     }
-
-    let [verify_ix, finalize_ix] = finalize_ixs_with_signature(
-        payer.pubkey(),
-        verified.config_address,
-        verified.account_address,
-        verified.request_address,
-        parsed.operator,
-        parsed.signature,
-        &binding,
-    );
-    let signature = send_ixs(&rpc, &payer, &[verify_ix, finalize_ix])?;
-    println!("finalize confirmed: {signature}");
-
-    let post = fetch_and_verify_request(&rpc, request_address)?;
-    if post.request.status != protocol::STATUS_FINALIZED {
-        return Err(LabError(format!(
-            "request {request_address} did not reach Finalized status after confirmation \
-             (status: {})",
-            status_label(post.request.status)
-        )));
-    }
-    if post.request.result_hash != parsed.result_hash {
-        return Err(LabError(
-            "on-chain result_hash does not match result.json after finalize".to_string(),
-        ));
-    }
-    let recomputed_result_digest = protocol::result_digest(&binding);
-    if post.request.result_digest != recomputed_result_digest {
-        return Err(LabError(
-            "on-chain result_digest does not match the recomputed digest after finalize"
-                .to_string(),
-        ));
-    }
-    println!("verified on-chain: status=finalized, result_hash and result_digest match");
-
-    state.rpc_url = Some(rpc_url);
-    state.payer_keypair_path = Some(payer_path.display().to_string());
-    state.save(data_dir)?;
     Ok(())
 }
 

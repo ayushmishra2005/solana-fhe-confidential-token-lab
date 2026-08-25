@@ -39,6 +39,13 @@ pub struct DevnetState {
     pub payer_keypair_path: Option<String>,
     pub authority_keypair_path: Option<String>,
     pub owner_keypair_path: Option<String>,
+    /// Public OpenZeppelin Relayer transaction/job id from the latest
+    /// optional Relayer finalize. Never an API key or other secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_relayer_transaction_id: Option<String>,
+    /// Public Solana signature from the latest Relayer-submitted finalize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_solana_signature: Option<String>,
 }
 
 impl DevnetState {

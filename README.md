@@ -442,6 +442,27 @@ key bytes. `devnet finalize` consumes the worker's existing `result.json`
 signature as-is and never loads the operator's private key, so the worker
 and the finalizer/relayer can be different principals.
 
+### Experimental OpenZeppelin Relayer transport
+
+Optional and experimental. Direct JSON-RPC remains the default and the
+validated Devnet path. This transport is not a Devnet E2E-validated Relayer
+run.
+
+```bash
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finalize
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finalize \
+  --transport direct
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finalize \
+  --transport openzeppelin \
+  --relayer-url http://127.0.0.1:8080 \
+  --relayer-id solana-devnet
+```
+
+The Relayer API secret comes from the `OPENZEPPELIN_RELAYER_API_KEY`
+environment variable. Do not pass it as a CLI flag. The FHE operator key
+signs the computation result; the Relayer Solana signer only signs and
+pays the transaction. Those roles stay separate.
+
 ## Tests
 
 ```bash
@@ -468,12 +489,11 @@ Verified counts on this machine:
 - 1 end-to-end test: encrypt, submit, TFHE evaluate, sign, finalize,
   owner decrypt for allowed and both denied cases
 - 1 coordinator `test_id` unit test
-- 15 `confidential-lab` Devnet/RPC security tests: `devnet-state.json` ser/de and
-  no private-key fields, tilde/path handling, PDA helpers, request-binding
-  reconstruction, historical vs pending lock checks, owner/discriminator
-  rejects, result/request consistency, local Ed25519 accept/reject, RPC
-  error log surfacing
-- 57 tests total
+- 37 `confidential-lab` Devnet/RPC/Relayer tests: previous Devnet/RPC security
+  coverage plus OpenZeppelin Relayer info validation, instruction
+  serialization, Ed25519/finalize adjacency, transport defaults, mock REST
+  submit/poll/error paths, and shared post-finalize verification
+- 79 tests total
 
 ## Measurements
 
@@ -578,8 +598,10 @@ Solana
 Protocol logic must remain independent of the transport layer.
 OpenZeppelin Relayer must not require the FHE operator private key; it
 should consume the worker-produced signature and act as transaction
-infrastructure. This phase is planned and not implemented. This
-repository does not currently use OpenZeppelin Relayer.
+infrastructure. An experimental optional Relayer transport exists in
+the client; it has not been validated on Devnet. This phase stays
+planned until a real Relayer + Devnet run succeeds. Direct RPC remains
+available.
 
 ### Phase 3 — Confidential-Contract Security Mapping
 
@@ -695,8 +717,9 @@ Neither column is a substitute for the other.
   and [ERC-7984](https://eips.ethereum.org/EIPS/eip-7984)
 
 OpenZeppelin Confidential Contracts is currently an EVM/fhEVM
-architectural and security reference. This repository does not yet use
-OpenZeppelin source code or infrastructure.
+architectural and security reference. This repository does not vendor
+OpenZeppelin source. An experimental optional Relayer HTTP client exists
+in the host CLI; it is not a validated Devnet integration.
 
 A planned phase evaluates OpenZeppelin Relayer as Solana transaction
 infrastructure and separately maps Confidential Contracts/FHEVM
