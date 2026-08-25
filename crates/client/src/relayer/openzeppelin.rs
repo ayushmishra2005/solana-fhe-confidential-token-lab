@@ -25,6 +25,9 @@ pub struct OpenZeppelinRelayerClient {
     http: reqwest::blocking::Client,
 }
 
+/// Covers Relayer v1.5.0 pending/sent windows (~3 minutes). Direct RPC stays at 90s.
+pub const DEFAULT_RELAYER_POLL_TIMEOUT_SECS: u64 = 240;
+
 pub struct PollSettings {
     pub timeout: Duration,
     pub interval: Duration,
@@ -33,7 +36,7 @@ pub struct PollSettings {
 impl Default for PollSettings {
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(90),
+            timeout: Duration::from_secs(DEFAULT_RELAYER_POLL_TIMEOUT_SECS),
             interval: Duration::from_secs(1),
         }
     }
@@ -216,7 +219,8 @@ impl OpenZeppelinRelayerClient {
             if Instant::now() >= deadline {
                 return Err(LabError(format!(
                     "timed out waiting for OpenZeppelin Relayer transaction {transaction_id} \
-                     to reach a terminal state (last status: {last_status})"
+                     to reach Relayer confirmed (last status: {last_status}); inspect the \
+                     Request PDA and Relayer job before attempting another finalize"
                 )));
             }
             std::thread::sleep(poll.interval);
@@ -387,6 +391,46 @@ mod tests {
         }
     }
 
+    fn short_poll() -> PollSettings {
+        PollSettings {
+            timeout: Duration::from_secs(2),
+            interval: Duration::from_millis(10),
+        }
+    }
+
+    fn submit_until_polled_status(status: &str, reason: &str) -> LabError {
+        let job_id = format!("job-{status}");
+        let polled_status = status.to_string();
+        let polled_reason = reason.to_string();
+        let url = spawn_mock(move |req| {
+            if req.method == "POST" {
+                return (
+                    200,
+                    ok_envelope(json!({
+                        "id": job_id,
+                        "status": "pending",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "transaction": ""
+                    })),
+                );
+            }
+            (
+                200,
+                ok_envelope(json!({
+                    "id": job_id,
+                    "status": polled_status,
+                    "status_reason": polled_reason,
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "transaction": ""
+                })),
+            )
+        });
+        let client = OpenZeppelinRelayerClient::new(&url, "solana-devnet", "token").unwrap();
+        client
+            .submit_instructions_and_wait(&[sample_ix()], &short_poll())
+            .unwrap_err()
+    }
+
     #[test]
     fn missing_authentication_fails_clearly() {
         let err = load_api_key(None).unwrap_err();
@@ -433,43 +477,53 @@ mod tests {
     }
 
     #[test]
+    fn default_relayer_poll_timeout_covers_relayer_windows() {
+        let poll = PollSettings::default();
+        assert_eq!(
+            poll.timeout,
+            Duration::from_secs(DEFAULT_RELAYER_POLL_TIMEOUT_SECS)
+        );
+        assert!(poll.timeout >= Duration::from_secs(180));
+        assert_eq!(DEFAULT_RELAYER_POLL_TIMEOUT_SECS, 240);
+    }
+
+    #[test]
     fn failed_relayer_status_returns_useful_error() {
-        let url = spawn_mock(|req| {
-            if req.method == "POST" {
-                return (
-                    200,
-                    ok_envelope(json!({
-                        "id": "job-failed",
-                        "status": "pending",
-                        "created_at": "2026-01-01T00:00:00Z",
-                        "transaction": ""
-                    })),
-                );
-            }
-            (
-                200,
-                ok_envelope(json!({
-                    "id": "job-failed",
-                    "status": "failed",
-                    "status_reason": "simulation failed: custom program error",
-                    "created_at": "2026-01-01T00:00:00Z",
-                    "transaction": ""
-                })),
-            )
-        });
-        let client = OpenZeppelinRelayerClient::new(&url, "solana-devnet", "token").unwrap();
-        let err = client
-            .submit_instructions_and_wait(
-                &[sample_ix()],
-                &PollSettings {
-                    timeout: Duration::from_secs(2),
-                    interval: Duration::from_millis(10),
-                },
-            )
-            .unwrap_err();
+        let err = submit_until_polled_status("failed", "simulation failed: custom program error");
         assert!(err.to_string().contains("job-failed"), "{err}");
         assert!(err.to_string().contains("failed"), "{err}");
         assert!(err.to_string().contains("simulation failed"), "{err}");
+    }
+
+    #[test]
+    fn expired_relayer_status_returns_useful_error() {
+        let err = submit_until_polled_status("expired", "blockhash expired");
+        assert!(err.to_string().contains("job-expired"), "{err}");
+        assert!(err.to_string().contains("expired"), "{err}");
+        assert!(err.to_string().contains("blockhash expired"), "{err}");
+        assert!(!err.to_string().contains("timed out"), "{err}");
+    }
+
+    #[test]
+    fn canceled_relayer_status_returns_useful_error() {
+        let err = submit_until_polled_status("canceled", "canceled by operator");
+        assert!(err.to_string().contains("job-canceled"), "{err}");
+        assert!(err.to_string().contains("canceled"), "{err}");
+        assert!(err.to_string().contains("canceled by operator"), "{err}");
+        assert!(!err.to_string().contains("timed out"), "{err}");
+    }
+
+    #[test]
+    fn mined_is_not_terminal_success() {
+        let err = submit_until_polled_status("mined", "");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(err.to_string().contains("job-mined"), "{err}");
+        assert!(err.to_string().contains("mined"), "{err}");
+        assert!(err.to_string().contains("inspect the Request PDA"), "{err}");
+        assert!(
+            !err.to_string().contains("transaction job-mined failed"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -505,6 +559,42 @@ mod tests {
         assert!(err.to_string().contains("timed out"), "{err}");
         assert!(err.to_string().contains("job-slow"), "{err}");
         assert!(err.to_string().contains("submitted"), "{err}");
+        assert!(err.to_string().contains("inspect the Request PDA"), "{err}");
+        assert!(!err.to_string().contains("failed (status"), "{err}");
+    }
+
+    #[test]
+    fn confirmed_status_is_accepted_case_insensitively() {
+        let url = spawn_mock(|req| {
+            if req.method == "POST" {
+                return (
+                    200,
+                    ok_envelope(json!({
+                        "id": "job-ok-case",
+                        "status": "pending",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "transaction": ""
+                    })),
+                );
+            }
+            (
+                200,
+                ok_envelope(json!({
+                    "id": "job-ok-case",
+                    "status": "CONFIRMED",
+                    "signature": "5Vt1xY8uWJcQhW8nYqK1pL3sR4tU6vA7bC9dE2fG8hJ",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "transaction": "dHh4"
+                })),
+            )
+        });
+        let client = OpenZeppelinRelayerClient::new(&url, "solana-devnet", "token").unwrap();
+        let result = client
+            .submit_instructions_and_wait(&[sample_ix()], &short_poll())
+            .unwrap();
+        assert_eq!(result.transaction_id, "job-ok-case");
+        assert_eq!(result.status, "CONFIRMED");
+        assert!(result.solana_signature.is_some());
     }
 
     #[test]

@@ -448,6 +448,30 @@ Optional and experimental. Direct JSON-RPC remains the default and the
 validated Devnet path. This transport is not a Devnet E2E-validated Relayer
 run.
 
+A local OpenZeppelin Relayer used with this client needs approximately:
+
+```json
+{
+  "network": "devnet",
+  "network_type": "solana",
+  "policies": {
+    "fee_payment_strategy": "relayer"
+  }
+}
+```
+
+The Relayer Solana signer pays and signs the transaction. Fund it with
+Devnet SOL. Do not use the FHE operator key as the Relayer signer.
+
+If `allowed_programs` is set, it must permit both
+`Ed25519SigVerify111111111111111111111111111` and the coordinator
+`2xNTgr7PmWSQRqGcMuCVhdTQLRP8bexVHGJ2CjxiJM6X`.
+
+The Relayer API secret comes only from the
+`OPENZEPPELIN_RELAYER_API_KEY` environment variable. Do not pass it as a
+CLI flag (`--api-key` or `--api-key=...`) and do not store it in
+`devnet-state.json`.
+
 ```bash
 cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finalize
 cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finalize \
@@ -458,10 +482,8 @@ cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finali
   --relayer-id solana-devnet
 ```
 
-The Relayer API secret comes from the `OPENZEPPELIN_RELAYER_API_KEY`
-environment variable. Do not pass it as a CLI flag. The FHE operator key
-signs the computation result; the Relayer Solana signer only signs and
-pays the transaction. Those roles stay separate.
+The FHE operator key signs the computation result; the Relayer Solana
+signer only signs and pays the transaction. Those roles stay separate.
 
 ## Tests
 
@@ -489,11 +511,12 @@ Verified counts on this machine:
 - 1 end-to-end test: encrypt, submit, TFHE evaluate, sign, finalize,
   owner decrypt for allowed and both denied cases
 - 1 coordinator `test_id` unit test
-- 37 `confidential-lab` Devnet/RPC/Relayer tests: previous Devnet/RPC security
+- 43 `confidential-lab` Devnet/RPC/Relayer tests: previous Devnet/RPC security
   coverage plus OpenZeppelin Relayer info validation, instruction
   serialization, Ed25519/finalize adjacency, transport defaults, mock REST
-  submit/poll/error paths, and shared post-finalize verification
-- 79 tests total
+  submit/poll/error paths, Relayer confirmation/timeout hardening, and shared
+  post-finalize verification
+- 85 tests total
 
 ## Measurements
 

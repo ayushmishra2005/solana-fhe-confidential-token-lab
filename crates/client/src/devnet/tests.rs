@@ -587,6 +587,13 @@ fn finalize_transport_defaults_to_direct_and_rejects_api_key_flag() {
         "{err}"
     );
     assert!(!err.to_string().contains("secret"), "{err}");
+
+    let err = FinalizeTransport::from_args(&["--api-key=super-secret-equals".into()]).unwrap_err();
+    assert!(
+        err.to_string().contains("OPENZEPPELIN_RELAYER_API_KEY"),
+        "{err}"
+    );
+    assert!(!err.to_string().contains("super-secret-equals"), "{err}");
 }
 
 #[test]

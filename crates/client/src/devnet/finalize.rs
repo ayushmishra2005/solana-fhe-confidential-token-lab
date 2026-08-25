@@ -56,7 +56,7 @@ pub struct FinalizeOutcome {
 
 impl FinalizeTransport {
     pub fn from_args(args: &[String]) -> Result<Self, LabError> {
-        if has_flag(args, "--api-key") {
+        if has_flag(args, "--api-key") || args.iter().any(|arg| arg.starts_with("--api-key=")) {
             return Err(LabError(
                 "--api-key is not supported; set OPENZEPPELIN_RELAYER_API_KEY in the environment"
                     .to_string(),
@@ -242,6 +242,7 @@ pub fn deliver_openzeppelin(
     let relayer = client.validate_configured_relayer()?;
     let ixs = prepared.instructions_for_payer(relayer.address)?;
     let specs = instructions_to_specs(&ixs);
+    // Submitted pair only; Relayer v1.5.0 does not insert between these ixs.
     require_ed25519_immediately_before_finalize_specs(&specs)?;
     let RelayerSubmitResult {
         transaction_id,

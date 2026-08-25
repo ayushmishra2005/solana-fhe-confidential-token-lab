@@ -89,11 +89,13 @@ pub enum RelayerJobState {
 }
 
 /// Official `TransactionStatus` variants (`rename_all = "lowercase"`).
-/// Solana on-chain finalized maps to Relayer `confirmed`; processed/confirmed
-/// map to Relayer `mined` (see Relayer `map_solana_status_to_transaction_status`).
+/// Relayer maps Solana processed/confirmed → `mined` and Solana finalized →
+/// `confirmed`. Only Relayer `confirmed` is treated as poll success so we do
+/// not return before a sufficiently confirmed Solana state. Comparison is
+/// case-insensitive; unknown statuses stay in-progress.
 pub fn classify_relayer_status(status: &str) -> RelayerJobState {
-    match status {
-        "confirmed" | "mined" => RelayerJobState::Succeeded,
+    match status.trim().to_ascii_lowercase().as_str() {
+        "confirmed" => RelayerJobState::Succeeded,
         "failed" | "expired" | "canceled" => RelayerJobState::Failed,
         _ => RelayerJobState::InProgress,
     }
@@ -372,7 +374,10 @@ mod tests {
             classify_relayer_status("submitted"),
             RelayerJobState::InProgress
         );
-        assert_eq!(classify_relayer_status("mined"), RelayerJobState::Succeeded);
+        assert_eq!(
+            classify_relayer_status("mined"),
+            RelayerJobState::InProgress
+        );
         assert_eq!(
             classify_relayer_status("confirmed"),
             RelayerJobState::Succeeded
@@ -380,6 +385,29 @@ mod tests {
         assert_eq!(classify_relayer_status("failed"), RelayerJobState::Failed);
         assert_eq!(classify_relayer_status("expired"), RelayerJobState::Failed);
         assert_eq!(classify_relayer_status("canceled"), RelayerJobState::Failed);
+        assert_eq!(
+            classify_relayer_status("unknown-status"),
+            RelayerJobState::InProgress
+        );
+    }
+
+    #[test]
+    fn classifies_relayer_status_case_insensitively() {
+        assert_eq!(
+            classify_relayer_status("Confirmed"),
+            RelayerJobState::Succeeded
+        );
+        assert_eq!(
+            classify_relayer_status("CONFIRMED"),
+            RelayerJobState::Succeeded
+        );
+        assert_eq!(
+            classify_relayer_status("MINED"),
+            RelayerJobState::InProgress
+        );
+        assert_eq!(classify_relayer_status("Failed"), RelayerJobState::Failed);
+        assert_eq!(classify_relayer_status("EXPIRED"), RelayerJobState::Failed);
+        assert_eq!(classify_relayer_status("Canceled"), RelayerJobState::Failed);
     }
 
     #[test]

@@ -10,7 +10,7 @@ pub mod types;
 
 pub use openzeppelin::{
     load_api_key, load_api_key_from_env, OpenZeppelinRelayerClient, PollSettings,
-    RelayerSubmitResult, API_KEY_ENV,
+    RelayerSubmitResult, API_KEY_ENV, DEFAULT_RELAYER_POLL_TIMEOUT_SECS,
 };
 pub use types::{
     instruction_to_spec, instructions_to_specs, require_ed25519_immediately_before_finalize,
