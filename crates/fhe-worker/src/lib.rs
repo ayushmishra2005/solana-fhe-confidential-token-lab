@@ -364,6 +364,27 @@ pub fn load_material(
     })
 }
 
+/// Evaluation-only material: the compressed server (evaluation) key and its
+/// commitment. Deliberately excludes the client decryption key so a worker
+/// role can evaluate circuits without ever being able to decrypt operands or
+/// results.
+pub struct ServerMaterial {
+    pub compressed_server_key: CompressedServerKey,
+    pub params_hash: [u8; 32],
+}
+
+pub fn load_server_material(
+    server_key_path: &Path,
+    params_hash: [u8; 32],
+) -> Result<ServerMaterial, WorkerError> {
+    let compressed_server_key = read_compressed_server_key(server_key_path)?;
+    require_server_key_commitment(&compressed_server_key, &params_hash)?;
+    Ok(ServerMaterial {
+        compressed_server_key,
+        params_hash,
+    })
+}
+
 pub fn parse_hex32(value: &str) -> Result<[u8; 32], WorkerError> {
     let bytes = hex::decode(value).map_err(|_| WorkerError::Deserialize)?;
     bytes.try_into().map_err(|_| WorkerError::Deserialize)

@@ -5,8 +5,8 @@ use confidential_lab::{
     data_paths, encrypt_inputs, measure, read_operator, run_demo, setup, LabError, ParamsFile,
 };
 use fhe_worker::{
-    decrypt_bool, load_bool, load_material, parse_hex32, process_request, request_from_file,
-    BlobStore,
+    decrypt_bool, load_bool, load_material, load_server_material, parse_hex32, process_request,
+    request_from_file, BlobStore,
 };
 use solana_signer::Signer;
 
@@ -33,6 +33,7 @@ fn main() -> ExitCode {
         "decrypt" => cmd_decrypt(&data_dir),
         "demo" => cmd_demo(&data_dir, &args),
         "measure" => cmd_measure(),
+        "devnet" => cmd_devnet(&data_dir, &args),
         other => {
             eprintln!("unknown command: {other}");
             usage();
@@ -50,8 +51,37 @@ fn main() -> ExitCode {
 
 fn usage() {
     eprintln!(
-        "usage: confidential-lab [--data-dir .data] <setup|encrypt|evaluate|decrypt|demo|measure>"
+        "usage: confidential-lab [--data-dir .data] <setup|encrypt|evaluate|decrypt|demo|measure|devnet>"
     );
+    eprintln!(
+        "       confidential-lab [--data-dir .data] devnet <initialize|create-account|submit|fetch-request|finalize|inspect>"
+    );
+}
+
+fn cmd_devnet(data_dir: &Path, args: &[String]) -> Result<(), LabError> {
+    if args.is_empty() {
+        eprintln!(
+            "usage: confidential-lab devnet <initialize|create-account|submit|fetch-request|finalize|inspect>"
+        );
+        return Err(LabError("missing devnet subcommand".to_string()));
+    }
+    let sub = args[0].as_str();
+    let rest = &args[1..];
+    use confidential_lab::devnet::commands;
+    match sub {
+        "initialize" => commands::cmd_initialize(data_dir, rest),
+        "create-account" => commands::cmd_create_account(data_dir, rest),
+        "submit" => commands::cmd_submit(data_dir, rest),
+        "fetch-request" => commands::cmd_fetch_request(data_dir, rest),
+        "finalize" => commands::cmd_finalize(data_dir, rest),
+        "inspect" => commands::cmd_inspect(data_dir, rest),
+        other => {
+            eprintln!(
+                "unknown devnet subcommand: {other}; expected one of initialize|create-account|submit|fetch-request|finalize|inspect"
+            );
+            Err(LabError(format!("unknown devnet subcommand: {other}")))
+        }
+    }
 }
 
 fn cmd_setup(data_dir: &Path) -> Result<(), LabError> {
@@ -91,11 +121,9 @@ fn cmd_evaluate(data_dir: &Path) -> Result<(), LabError> {
     let store = BlobStore::new(&paths.ciphertexts)?;
     let params: ParamsFile = serde_json::from_slice(&std::fs::read(&paths.params)?)
         .map_err(|e| LabError(e.to_string()))?;
-    let material = load_material(
-        &paths.client_key,
-        &paths.server_key,
-        parse_hex32(&params.params_hash)?,
-    )?;
+    // Evaluation only ever needs the evaluation (server) key; the client
+    // decryption key is never loaded here so a worker role cannot decrypt.
+    let material = load_server_material(&paths.server_key, parse_hex32(&params.params_hash)?)?;
     let operator = read_operator(&paths.operator)?;
     let (binding, signature) =
         process_request(&store, &request, &material.compressed_server_key, &operator)?;

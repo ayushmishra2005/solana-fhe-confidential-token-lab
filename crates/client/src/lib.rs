@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+pub mod devnet;
+
 use anchor_lang::{InstructionData, ToAccountMetas};
 use confidential_coordinator::accounts as accs;
 use confidential_coordinator::instruction as ixs;
@@ -409,6 +411,44 @@ pub fn finalize_ixs(
     let sig: [u8; 64] = signature.as_ref().try_into().expect("ed25519 signature");
     let verify =
         new_ed25519_instruction_with_signature(&message, &sig, &operator.pubkey().to_bytes());
+    let finalize = Instruction {
+        program_id: PROGRAM_ID,
+        accounts: accs::Finalize {
+            payer,
+            config,
+            account,
+            request,
+            instructions: confidential_coordinator::ed25519::INSTRUCTIONS_ID,
+        }
+        .to_account_metas(None),
+        data: ixs::Finalize {
+            args: FinalizeArgs {
+                result_hash: binding.result_hash,
+                result_type: binding.result_type,
+                circuit_id: binding.circuit_id,
+            },
+        }
+        .data(),
+    };
+    [verify, finalize]
+}
+
+/// Build the [ed25519 verify, finalize] instruction pair from an
+/// already-produced worker signature (pubkey + signature bytes), without
+/// ever loading the operator's private key. This lets the finalizer/relayer
+/// role be a completely different principal from the worker that evaluated
+/// the circuit and signed the result.
+pub fn finalize_ixs_with_signature(
+    payer: solana_address::Address,
+    config: solana_address::Address,
+    account: solana_address::Address,
+    request: solana_address::Address,
+    operator_pubkey: [u8; 32],
+    signature: [u8; 64],
+    binding: &protocol::ResultBinding,
+) -> [Instruction; 2] {
+    let message = protocol::encode_result(binding);
+    let verify = new_ed25519_instruction_with_signature(&message, &signature, &operator_pubkey);
     let finalize = Instruction {
         program_id: PROGRAM_ID,
         accounts: accs::Finalize {

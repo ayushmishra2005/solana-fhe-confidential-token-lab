@@ -300,9 +300,48 @@ cargo run -p fhe-worker --release -- evaluate \
 
 The worker prints only `result_hash`. It does not decrypt.
 
-There is no live-validator RPC CLI in Phase 1. Config, account, submit,
-and finalize against the coordinator are exercised by `demo` and by
-`phase1-tests`.
+## Devnet (Phase 1.1)
+
+`demo` and `phase1-tests` exercise config/account/submit/finalize against
+LiteSVM only. A separate `devnet` subcommand set drives the deployed
+coordinator over real Solana RPC instead. It is transport/RPC work only:
+the on-chain program, account layouts, and digest scheme are unchanged.
+
+The coordinator program has been deployed to Devnet. A successful
+client-driven Devnet end-to-end run has not been completed or recorded
+yet; the commands below are the intended manual path, not a verified E2E.
+
+The "mint" used by `devnet initialize` is a synthetic Phase-1 identity
+binding (a freshly generated pubkey used only to derive PDAs) and not a
+Token-2022 mint; no token accounts or transfers are involved.
+
+```bash
+cargo run -p confidential-lab --release -- --data-dir .data/devnet setup
+cargo run -p confidential-lab --release -- --data-dir .data/devnet encrypt \
+  --balance 100 --amount 25 --limit 50
+
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet initialize \
+  --max-request-lifetime-slots 10000
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet create-account \
+  --balance-hash <balance_hash> --limit-hash <limit_hash>
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet submit \
+  --amount-hash <amount_hash>
+
+cargo run -p confidential-lab --release -- --data-dir .data/devnet evaluate
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet finalize
+
+cargo run -p confidential-lab --release -- --data-dir .data/devnet devnet inspect
+cargo run -p confidential-lab --release -- --data-dir .data/devnet decrypt
+```
+
+`--payer`/`--authority`/`--owner` default to `~/.config/solana/id.json` and
+can be overridden per command. `devnet-state.json` under the data directory
+caches public addresses, the RPC URL, hashes/versions, the latest request
+pointer, and optional keypair *file paths* (`payer_keypair_path`,
+`authority_keypair_path`, `owner_keypair_path`). It never stores private
+key bytes. `devnet finalize` consumes the worker's existing `result.json`
+signature as-is and never loads the operator's private key, so the worker
+and the finalizer/relayer can be different principals.
 
 ## Tests
 
@@ -330,7 +369,12 @@ Verified counts on this machine:
 - 1 end-to-end test: encrypt, submit, TFHE evaluate, sign, finalize,
   owner decrypt for allowed and both denied cases
 - 1 coordinator `test_id` unit test
-- 42 tests total
+- 15 `confidential-lab` Phase 1.1 tests: `devnet-state.json` ser/de and
+  no private-key fields, tilde/path handling, PDA helpers, request-binding
+  reconstruction, historical vs pending lock checks, owner/discriminator
+  rejects, result/request consistency, local Ed25519 accept/reject, RPC
+  error log surfacing
+- 57 tests total
 
 ## Measurements
 
