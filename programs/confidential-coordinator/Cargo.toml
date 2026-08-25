@@ -1,0 +1,21 @@
+[package]
+name = "confidential-coordinator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "On-chain request/result coordinator. Does not evaluate TFHE."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "confidential_coordinator"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "1.1.2"
+confidential-protocol = { path = "../../crates/protocol" }
+solana-instructions-sysvar = "3.0.1"

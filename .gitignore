@@ -1,0 +1,9 @@
+.data/
+target/
+.anchor/
+.idea/
+.DS_Store
+
+# Local Solana program identities / deployment keys
+programs/**/keypair.json
+target/deploy/*-keypair.json

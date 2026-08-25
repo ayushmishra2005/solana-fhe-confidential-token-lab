@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "programs/confidential-coordinator",
+    "crates/protocol",
+    "crates/fhe-worker",
+    "crates/client",
+    "tests/integration",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+version = "0.1.0"
+
+# LiteSVM 0.15.2 is compiled against Agave 4.1.1. Newer 4.2.x crates
+# change ExecutionRecord and fail to compile the tester.
+[workspace.dependencies]
+agave-feature-set = "=4.1.1"
+agave-precompiles = "=4.1.1"
+agave-reserved-account-keys = "=4.1.1"
+solana-builtins = "=4.1.1"
+solana-compute-budget = "=4.1.1"
+solana-compute-budget-instruction = "=4.1.1"
+solana-fee = "=4.1.1"
+solana-program-runtime = "=4.1.1"
+solana-system-program = "=4.1.1"
+solana-svm-callback = "=4.1.1"
+solana-svm-log-collector = "=4.1.1"
+solana-svm-timings = "=4.1.1"
+solana-svm-transaction = "=4.1.1"
+solana-syscalls = "=4.1.1"
+solana-transaction-context = "=4.1.1"
+
+[profile.release]
+lto = "thin"
+
+# TFHE-rs is impractical in unoptimized test builds.
+[profile.test]
+opt-level = 3
+
+[profile.dev.package.tfhe]
+opt-level = 3

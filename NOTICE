@@ -1,0 +1,16 @@
+solana-fhe-confidential-token-lab
+Copyright 2026 the repository contributors
+
+This repository's original source is licensed under Apache-2.0.
+
+It depends on TFHE-rs (the `tfhe` crate), licensed under BSD-3-Clause-Clear.
+That license does not grant patent rights. Commercial use of TFHE-rs may
+require a separate patent license from Zama. This repository is not
+affiliated with or endorsed by Zama.
+
+Solana and Anchor crates used here are licensed under Apache-2.0.
+This repository is not affiliated with or endorsed by Solana Foundation.
+
+OpenZeppelin Confidential Contracts is cited only as public EVM/fhEVM
+design reference material. No OpenZeppelin source is included or linked
+as a runtime dependency.
