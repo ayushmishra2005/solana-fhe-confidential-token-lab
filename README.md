@@ -15,10 +15,9 @@ The Phase 1 answer is a split architecture:
 Phase 1 uses Zama's open-source TFHE-rs library for the actual
 homomorphic computation performed by the native Rust worker.
 
-This project is not affiliated with or endorsed by Solana Foundation,
-Zama, or OpenZeppelin. It is not a Solana, SPL, or Zama standard. It
-has not been audited and is not intended for production or real-value
-custody.
+This is an independent research prototype built with Solana/Anchor and Zama's
+TFHE-rs. It has not been audited and is not intended for production or
+real-value custody.
 
 ## Why this project exists
 
