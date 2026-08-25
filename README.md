@@ -6,7 +6,7 @@ This repository is an independent research prototype. It asks whether
 programmable encrypted policy evaluation can be coordinated on Solana
 without placing TFHE execution inside SBF.
 
-The Phase 1 answer is a split architecture:
+The implemented foundation uses a split architecture:
 
 - SVM-native authorization, account binding, and request lifecycle
 - off-chain TFHE-rs evaluation of a fixed encrypted predicate
@@ -36,8 +36,8 @@ ciphertexts without decrypting the operands. That is a different
 capability: programmable encrypted computation, not confidential
 settlement.
 
-This repository keeps both problems in scope. Token-2022 remains on the
-roadmap as Phase 2 interoperability rather than a replaced subsystem.
+This repository keeps both problems in scope. Token-2022 remains on
+the interoperability roadmap rather than a replaced subsystem.
 FHE does not replace Token-2022 Confidential Transfer.
 
 ## Phase 1
@@ -398,7 +398,7 @@ cargo run -p fhe-worker --release -- evaluate \
 
 The worker prints only `result_hash`. It does not decrypt.
 
-## Devnet (Phase 1.1)
+## Devnet Workflow
 
 `demo` and `phase1-tests` exercise config/account/submit/finalize against
 LiteSVM only. A separate `devnet` subcommand set drives the deployed
@@ -468,7 +468,7 @@ Verified counts on this machine:
 - 1 end-to-end test: encrypt, submit, TFHE evaluate, sign, finalize,
   owner decrypt for allowed and both denied cases
 - 1 coordinator `test_id` unit test
-- 15 `confidential-lab` Phase 1.1 tests: `devnet-state.json` ser/de and
+- 15 `confidential-lab` Devnet/RPC security tests: `devnet-state.json` ser/de and
   no private-key fields, tilde/path handling, PDA helpers, request-binding
   reconstruction, historical vs pending lock checks, owner/discriminator
   rejects, result/request consistency, local Ed25519 accept/reject, RPC
@@ -517,63 +517,155 @@ cargo run -p confidential-lab --release -- measure
 - Host rustc and SBF rustc differ; SBF builds go through
   `cargo-build-sbf`, not the workspace host toolchain.
 
-## Token-2022 Integration
+## Token-2022 Interoperability
 
-Token-2022 Confidential Transfer is planned Phase 2 work, not an
-out-of-scope topic.
+Token-2022 Confidential Transfer is planned later-phase research and
+implementation, not a feature of the current tree.
 
 Confidential Transfer uses ElGamal ciphertexts and ZK proofs to move
 token value while hiding amounts. This repository investigates a
 complementary boundary: an FHE policy result that could later gate
 authorization without revealing the compared values.
 
-Phase 1 already treats mint identity as an explicit binding on Config,
+The current mint is only a synthetic identity binding on Config,
 ConfidentialAccount, and Request so a later mint-to-extension mapping
-is not blocked by the account layout. It does not call Token-2022 and
-does not interpret an FHE Boolean as a transfer authorization.
+is not blocked by the account layout. The current code does not call
+Token-2022 and does not interpret an FHE Boolean as a transfer
+authorization.
 
-Phase 2 must still verify, on the target cluster, that the Confidential
-Transfer and ZK ElGamal proof programs are deployed and that any
-proof-to-policy adapter is specified before interoperability is
-claimed.
+Proof-to-policy and security binding — including cluster deployment of
+the Confidential Transfer and ZK ElGamal proof programs — must be
+designed before interoperability is claimed.
 
 ## Project Phases
 
-### Phase 1 — FHE Coprocessor Foundation
+### Phase 1 — SVM-Native FHE Coordination
 
-Implemented in this repository.
+Implemented and validated on Solana Devnet.
 
-- request/result protocol with domain-separated canonical bytes
-- real TFHE-rs encrypted policy evaluation
-- SVM coordination and one-active-request locking
-- operator Ed25519 result authentication
-- replay and substitution checks
-- owner decryption of the finalized Boolean
-- adversarial coordinator tests and one end-to-end path
-- recorded Solana Devnet end-to-end validation
+- canonical request/result protocol with domain-separated encodings
+- real Zama TFHE-rs encrypted policy evaluation
+- SVM-native Config, ConfidentialAccount, and Request PDAs
+- one-active-request lifecycle locking
+- authoritative request reconstruction from on-chain state
+- worker Ed25519 result authentication
+- worker/finalizer role separation
+- replay, substitution, stale-state, and lifecycle checks
+- owner-side decryption of the encrypted Boolean
+- local LiteSVM adversarial tests
+- successful end-to-end Solana Devnet validation with recorded
+  transaction/PDA evidence
 
-### Phase 2 — Token-2022 Interoperability
+### Phase 2 — OpenZeppelin Relayer Integration
 
-Planned. Research and implement the boundary between Token-2022
-confidential accounts and transfers, FHE-backed policy evaluation,
-proof verification, and authorization. Do not treat Phase 1 account
-handles as Token-2022 confidential token accounts.
+Planned. The goal is to integrate OpenZeppelin Relayer as an
+alternative Solana transaction delivery and finalization path, while
+keeping the current direct-RPC client as the minimal reference
+implementation.
 
-### Phase 3 — Confidential Policy-Governed Transfers
+```text
+Zama TFHE-rs worker
+        ↓
+encrypted result + worker signature
+        ↓
+OpenZeppelin Relayer
+        ↓
+native Ed25519 verification + coordinator finalize
+        ↓
+Solana
+```
 
-Planned. Explore value movement conditioned on an encrypted policy
-result. Worker integrity and trust minimization must be addressed
-before any real-value use.
+Protocol logic must remain independent of the transport layer.
+OpenZeppelin Relayer must not require the FHE operator private key; it
+should consume the worker-produced signature and act as transaction
+infrastructure. This phase is planned and not implemented. This
+repository does not currently use OpenZeppelin Relayer.
 
-### Phase 4 — Trust Minimization
+### Phase 3 — Confidential-Contract Security Mapping
+
+Planned research and documentation. This phase studies OpenZeppelin
+Confidential Contracts and Zama/FHEVM security patterns and maps
+relevant ideas to SVM-native semantics rather than directly porting
+EVM abstractions.
+
+Topics:
+
+- encrypted-value authorization
+- PDA/account ownership and ACL equivalents
+- request/result binding
+- replay and stale-state resistance
+- relayer trust boundaries
+- key/operator rotation
+- lifecycle/cancellation
+- off-chain computation integrity
+- upgrade/governance assumptions
+
+The goal is to determine which FHEVM security patterns transfer
+cleanly to Solana and which require a different SVM-native design.
+
+### Phase 4 — Token-2022 Confidential Interoperability
+
+Planned research and implementation. This phase investigates the
+boundary between Token-2022 Confidential Transfer's ElGamal/ZK
+confidential settlement model and TFHE-backed programmable encrypted
+policy evaluation. The problem is not simply "call Token-2022".
+
+The design must address:
+
+- ElGamal/ZK state ↔ TFHE ciphertext binding
+- source-of-truth rules
+- proof-to-policy adapters
+- key/encryption-domain differences
+- numeric-domain constraints
+- pending confidential balances
+- replay/stale-policy resistance
+- upgrade/governance assumptions
+
+FHE is complementary to Token-2022 Confidential Transfer, not a
+replacement.
+
+### Phase 5 — Confidential Policy-Governed Settlement
+
+Planned only after the Phase 4 security model is resolved. This
+explores confidential value movement conditioned on encrypted policy
+evaluation. No value movement is implemented today.
+
+A `Finalized` Request does NOT mean `allowed = true`. Finalization
+only means an authenticated encrypted computation result was
+recorded. Settlement and authorization semantics must be specified
+separately.
+
+### Phase 6 — OpenZeppelin Monitor / Operational Security
+
+Planned. This phase explores OpenZeppelin Monitor around the deployed
+Solana coordinator for operational and security visibility where
+practical. OpenZeppelin Monitor is not currently integrated.
+
+Potential observations:
+
+- configuration changes
+- operator rotation
+- pause/unpause
+- finalization activity
+- lifecycle anomalies
+- suspicious/failed interactions
+
+Monitoring does not change the protocol's computation-correctness
+assumptions.
+
+### Phase 7 — Trust Minimization
 
 Research directions, not implemented:
 
-- multi-operator or quorum attestation
+- multi-operator/quorum attestation
 - verifiable computation
 - threshold key management
 - durable ciphertext availability
-- key rotation beyond the current version/epoch counters
+- stronger operator/key rotation models
+- production governance / upgrade controls
+
+A quorum should not be described as trustless; the objective is to
+incrementally reduce the current single-operator trust assumption.
 
 ## Token-2022 vs FHE
 
@@ -602,11 +694,17 @@ Neither column is a substitute for the other.
   [Confidential Contracts](https://docs.openzeppelin.com/confidential-contracts)
   and [ERC-7984](https://eips.ethereum.org/EIPS/eip-7984)
 
-OpenZeppelin Confidential Contracts is an EVM/fhEVM architectural
-reference. This repository does not use OpenZeppelin source, does not
-depend on an OpenZeppelin crate, and is not affiliated with
-OpenZeppelin. EVM ACL, callback, and storage assumptions are not copied
-into the SVM coordinator.
+OpenZeppelin Confidential Contracts is currently an EVM/fhEVM
+architectural and security reference. This repository does not yet use
+OpenZeppelin source code or infrastructure.
+
+A planned phase evaluates OpenZeppelin Relayer as Solana transaction
+infrastructure and separately maps Confidential Contracts/FHEVM
+security patterns to SVM-native account and execution semantics.
+
+This is an independent research project and is not affiliated with or
+endorsed by OpenZeppelin. EVM ACL, callback, and storage assumptions
+are not copied directly into the SVM coordinator.
 
 ## License / Third-Party Notice
 
