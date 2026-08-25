@@ -35,9 +35,10 @@ solana-transaction-context = "=4.1.1"
 [profile.release]
 lto = "thin"
 
-# TFHE-rs is impractical in unoptimized test builds.
-[profile.test]
+# Optimize TFHE only. Workspace-wide test opt-level=3 recompiles LiteSVM
+# and Agave at -O3, which stalled GitHub Actions for hours.
+[profile.dev.package.tfhe]
 opt-level = 3
 
-[profile.dev.package.tfhe]
+[profile.test.package.tfhe]
 opt-level = 3
