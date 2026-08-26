@@ -17,8 +17,10 @@ implementation in the native Rust worker, not as an architectural
 reference. The worker evaluates the encrypted predicate with TFHE-rs;
 the SVM coordinator never runs TFHE.
 
-That split path was completed end-to-end on Solana Devnet on 2026-08-25.
-See [Live Devnet Validation](#live-devnet-validation).
+The project has completed Phase 1 SVM-native FHE coordination on Solana
+Devnet (2026-08-25) and Phase 2 OpenZeppelin Relayer integration
+(2026-08-26). See [Live Devnet Validation](#live-devnet-validation) and
+[OpenZeppelin Relayer Devnet Validation](#openzeppelin-relayer-devnet-validation).
 
 This is an independent research prototype built with Solana/Anchor and
 Zama's TFHE-rs. It has not been audited and is not intended for
@@ -122,8 +124,10 @@ Data flow:
 5. A finalizer/relayer submits native Ed25519 verify plus `finalize`.
 6. The owner loads the result blob and decrypts with the client key.
 
-The same sequence was completed on Solana Devnet; recorded evidence is
-in [Live Devnet Validation](#live-devnet-validation).
+The same sequence was completed on Solana Devnet over direct JSON-RPC
+and again with OpenZeppelin Relayer as the finalize transport. Recorded
+evidence is in [Live Devnet Validation](#live-devnet-validation) and
+[OpenZeppelin Relayer Devnet Validation](#openzeppelin-relayer-devnet-validation).
 
 ## Live Devnet Validation
 
@@ -213,6 +217,93 @@ not a production governance model.
 | Coordinator authorization, binding, lifecycle, and atomic finalize | Token-2022 interoperability or value movement |
 | Finalizer consumes the worker-produced signature as-is and never loads the operator private key | Audited or production-ready security |
 | Request PDA `Finalized` with matching result hash and digest | Endorsement by Solana, Zama, or OpenZeppelin |
+
+## OpenZeppelin Relayer Devnet Validation
+
+Phase 2 was successfully validated end-to-end on Solana Devnet on
+2026-08-26 using OpenZeppelin Relayer v1.5.0 as the transaction
+delivery and fee-paying finalization transport.
+
+The OpenZeppelin Relayer transport has been validated on Solana Devnet.
+It remains research infrastructure and has not been audited for
+production use. Direct JSON-RPC finalize remains available and remains
+the default transport.
+
+```text
+Zama TFHE-rs worker
+        ↓
+encrypted FheBool
++ worker Ed25519 signature
+        ↓
+shared finalization validation
+        ↓
+OpenZeppelin Relayer v1.5.0
+        ↓
+Solana transaction signing / fee payment
+        ↓
+native Ed25519 verify
+        ↓
+coordinator finalize
+        ↓
+Finalized Request PDA
+        ↓
+owner decrypt
+```
+
+| Field | Value |
+| --- | --- |
+| Relayer version | v1.5.0 |
+| Relayer ID | `solana-devnet` |
+| Relayer network | `devnet` (`network_type=solana`, `fee_payment_strategy=relayer`) |
+| Relayer Solana address | [`4mHtzBqv2UeYGYZxarRhjGEXR2ckk8W36uy2vN5phcyN`](https://explorer.solana.com/address/4mHtzBqv2UeYGYZxarRhjGEXR2ckk8W36uy2vN5phcyN?cluster=devnet) |
+| FHE operator | `FEdV611QSANXrnKFwmdRdnfUgfM1vgqCeimjJEmboyt8` |
+| Request PDA | [`5J3QZNuNoYjdXAWtYfagcjPLXpquMJkqfgaMCpqSXZuU`](https://explorer.solana.com/address/5J3QZNuNoYjdXAWtYfagcjPLXpquMJkqfgaMCpqSXZuU?cluster=devnet) |
+| Relayer job ID | `49e3f3c3-3099-434e-b00e-a2dc24fe79ab` |
+| Solana transaction | [`2HhYWewR78Egbe31ot18y9gbdQB4D9tEpKftAbX4H4bp6EejU9bukKHJKN85kynZdUxbFXLdenA8rS7PPKJMAzQD`](https://explorer.solana.com/tx/2HhYWewR78Egbe31ot18y9gbdQB4D9tEpKftAbX4H4bp6EejU9bukKHJKN85kynZdUxbFXLdenA8rS7PPKJMAzQD?cluster=devnet) |
+| Result hash | `28a2492fce06d50104e659de477f11e2caf72f75471450229344e1df2d65a5ad` |
+| Result digest | `c6c60c97224936c5dd25696e91fb8761e681b30c6619252b3f606bff79e8d737` |
+| Observed decrypted result | `true` |
+
+Policy: `(balance >= amount) && (amount <= limit)`. Inputs: balance =
+100, amount = 25, limit = 50. Expected and observed decrypted result:
+`true`. Request nonce = 2.
+
+The worker signed the encrypted result before the Relayer was involved.
+The Relayer path consumed that signature as-is and did not re-sign the
+result. Native Ed25519 verification immediately preceded coordinator
+`finalize`. The coordinator verified `Config.operator`, not the Relayer
+payer.
+
+After Relayer confirmation the client did not trust the HTTP response
+alone. It re-fetched the Request PDA from Solana and verified:
+
+- status = `Finalized`
+- `result_hash` matched
+- `result_digest` matched
+- `pending_request` cleared
+- `state_version` advanced from 1 to 2
+
+> Signature authenticity is not proof of correct FHE execution.
+
+The current research prototype still trusts the configured FHE operator
+for computation correctness and liveness. Relayer delivery does not
+make FHE execution trustless.
+
+This remains an independent research prototype. It is not audited and
+is not for production or real-value use. No Token-2022 settlement or
+value movement is implemented. OpenZeppelin did not review, sponsor,
+approve, or endorse this project.
+
+### Operator vs Relayer
+
+| Role | Address | Job |
+| --- | --- | --- |
+| FHE operator | `FEdV611QSANXrnKFwmdRdnfUgfM1vgqCeimjJEmboyt8` | Evaluates the encrypted predicate and signs the canonical result. Does not sign or pay the Solana transaction. |
+| OpenZeppelin Relayer payer | [`4mHtzBqv2UeYGYZxarRhjGEXR2ckk8W36uy2vN5phcyN`](https://explorer.solana.com/address/4mHtzBqv2UeYGYZxarRhjGEXR2ckk8W36uy2vN5phcyN?cluster=devnet) | Signs and pays the Solana transaction. Does not receive or load the FHE operator private key. |
+
+These are different keys and different roles. The Relayer consumes the
+already-produced worker signature and signs only the Solana
+transaction.
 
 ## Request Lifecycle
 
@@ -405,10 +496,12 @@ LiteSVM only. A separate `devnet` subcommand set drives the deployed
 coordinator over real Solana RPC instead. It is transport/RPC work only:
 the on-chain program, account layouts, and digest scheme are unchanged.
 
-The coordinator is deployed on Devnet. A client-driven end-to-end run
-completed on 2026-08-25; recorded addresses, transactions, and results
-are in [Live Devnet Validation](#live-devnet-validation). The commands
-below are the manual path used for that run.
+The coordinator is deployed on Devnet. A client-driven direct-RPC
+end-to-end run completed on 2026-08-25; see
+[Live Devnet Validation](#live-devnet-validation). An OpenZeppelin
+Relayer finalize of a later pending request completed on 2026-08-26;
+see [OpenZeppelin Relayer Devnet Validation](#openzeppelin-relayer-devnet-validation).
+The commands below are the manual path used for those runs.
 
 The "mint" used by `devnet initialize` is a synthetic Phase-1 identity
 binding (a freshly generated pubkey used only to derive PDAs) and not a
@@ -442,11 +535,11 @@ key bytes. `devnet finalize` consumes the worker's existing `result.json`
 signature as-is and never loads the operator's private key, so the worker
 and the finalizer/relayer can be different principals.
 
-### Experimental OpenZeppelin Relayer transport
+### OpenZeppelin Relayer transport
 
-Optional and experimental. Direct JSON-RPC remains the default and the
-validated Devnet path. This transport is not a Devnet E2E-validated Relayer
-run.
+The OpenZeppelin Relayer transport has been validated on Solana Devnet.
+It remains research infrastructure and has not been audited for
+production use. Direct JSON-RPC remains the default path.
 
 A local OpenZeppelin Relayer used with this client needs approximately:
 
@@ -555,8 +648,9 @@ cargo run -p confidential-lab --release -- measure
 - Fixed circuit only. The worker rejects unknown operations.
 - No Token-2022 CPI, no confidential transfer, no value movement.
 - No threshold KMS, no coprocessor quorum, no durable availability.
-- `demo` and tests use LiteSVM. A recorded Solana Devnet end-to-end
-  run is in [Live Devnet Validation](#live-devnet-validation).
+- `demo` and tests use LiteSVM. Recorded Solana Devnet end-to-end
+  runs are in [Live Devnet Validation](#live-devnet-validation) and
+  [OpenZeppelin Relayer Devnet Validation](#openzeppelin-relayer-devnet-validation).
 - Host rustc and SBF rustc differ; SBF builds go through
   `cargo-build-sbf`, not the workspace host toolchain.
 
@@ -601,30 +695,20 @@ Implemented and validated on Solana Devnet.
 
 ### Phase 2 — OpenZeppelin Relayer Integration
 
-Planned. The goal is to integrate OpenZeppelin Relayer as an
-alternative Solana transaction delivery and finalization path, while
-keeping the current direct-RPC client as the minimal reference
-implementation.
+Implemented and validated on Solana Devnet.
 
-```text
-Zama TFHE-rs worker
-        ↓
-encrypted result + worker signature
-        ↓
-OpenZeppelin Relayer
-        ↓
-native Ed25519 verification + coordinator finalize
-        ↓
-Solana
-```
+- optional OpenZeppelin Relayer v1.5.0 finalize transport
+- direct JSON-RPC remains the default and reference path
+- Relayer Solana address used as transaction payer/signer
+- worker/operator signature remains independent of Relayer
+- operator private key never reaches the Relayer path
+- native Ed25519 verify immediately preceding coordinator finalize
+- authoritative Request PDA verified after Relayer confirmation
+- successful Devnet E2E recorded with transaction evidence
 
-Protocol logic must remain independent of the transport layer.
-OpenZeppelin Relayer must not require the FHE operator private key; it
-should consume the worker-produced signature and act as transaction
-infrastructure. An experimental optional Relayer transport exists in
-the client; it has not been validated on Devnet. This phase stays
-planned until a real Relayer + Devnet run succeeds. Direct RPC remains
-available.
+Protocol logic remains independent of the transport layer. OpenZeppelin
+Relayer does not receive the FHE operator private key; it consumes the
+worker-produced signature and acts as transaction infrastructure.
 
 ### Phase 3 — Confidential-Contract Security Mapping
 
@@ -739,18 +823,15 @@ Neither column is a substitute for the other.
   [Confidential Contracts](https://docs.openzeppelin.com/confidential-contracts)
   and [ERC-7984](https://eips.ethereum.org/EIPS/eip-7984)
 
-OpenZeppelin Confidential Contracts is currently an EVM/fhEVM
-architectural and security reference. This repository does not vendor
-OpenZeppelin source. An experimental optional Relayer HTTP client exists
-in the host CLI; it is not a validated Devnet integration.
+OpenZeppelin Relayer v1.5.0 is used as an optional Solana finalization
+transport. OpenZeppelin Confidential Contracts remains an EVM/fhEVM
+architectural and security reference. OpenZeppelin Monitor remains
+planned. This repository does not vendor OpenZeppelin Confidential
+Contracts source.
 
-A planned phase evaluates OpenZeppelin Relayer as Solana transaction
-infrastructure and separately maps Confidential Contracts/FHEVM
-security patterns to SVM-native account and execution semantics.
-
-This is an independent research project and is not affiliated with or
-endorsed by OpenZeppelin. EVM ACL, callback, and storage assumptions
-are not copied directly into the SVM coordinator.
+This is an independent research project. OpenZeppelin did not review,
+sponsor, approve, or endorse it. EVM ACL, callback, and storage
+assumptions are not copied directly into the SVM coordinator.
 
 ## License / Third-Party Notice
 
