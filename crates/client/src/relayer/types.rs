@@ -448,12 +448,33 @@ mod tests {
             finalize.clone(),
         ])
         .unwrap();
-        let err =
-            require_ed25519_immediately_before_finalize_ids(&[ed, budget, finalize]).unwrap_err();
+        let err = require_ed25519_immediately_before_finalize_ids(&[
+            ed.clone(),
+            budget.clone(),
+            finalize.clone(),
+        ])
+        .unwrap_err();
         assert!(
             err.to_string()
                 .contains("immediately precede coordinator finalize"),
             "{err}"
+        );
+        let missing =
+            require_ed25519_immediately_before_finalize_ids(std::slice::from_ref(&finalize))
+                .unwrap_err();
+        assert!(
+            missing
+                .to_string()
+                .contains("immediately precede coordinator finalize"),
+            "{missing}"
+        );
+        let reversed =
+            require_ed25519_immediately_before_finalize_ids(&[finalize, ed]).unwrap_err();
+        assert!(
+            reversed
+                .to_string()
+                .contains("immediately precede coordinator finalize"),
+            "{reversed}"
         );
     }
 }

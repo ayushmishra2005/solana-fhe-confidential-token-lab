@@ -34,7 +34,10 @@ today. Intended behavior that is not enforced is labeled as such.
 Phase 3 answers a narrow question: which security *assumptions* from
 OpenZeppelin Confidential Contracts and Zama FHEVM can inform an
 SVM-native confidential-policy coordinator, which require a different
-mechanism, and which do not apply.
+mechanism, and which do not apply. Phase 3A is the mapping. Phase 3B
+adds executable adversarial regression tests for invariants the
+current implementation already enforces; it does not add product
+features or claim production hardening.
 
 This phase studies which security principles can inform an SVM-native
 design; it is not a source-level port of the EVM implementation.
@@ -1041,8 +1044,9 @@ Each is backed by an on-chain check (and, where noted, a test).
 
 3. **Nonce is not reused after lock release.** `release_account_lock`
    clears `pending_request` and increments `state_version` but does
-   not decrement `request_nonce`. Comment in program source states
-   this as intentional.
+   not decrement `request_nonce`. Tests:
+   `successful_finalize_state_invariants_and_duplicate_is_stable`,
+   `cancel_clears_pending_without_committing_fhe_result`.
 
 4. **A Finalized Request cannot be finalized again.**
    `require_pending_lock` requires `STATUS_PENDING`. Test:
@@ -1081,15 +1085,19 @@ Each is backed by an on-chain check (and, where noted, a test).
 
 13. **Native Ed25519 verification must immediately precede finalize.**
     `ed25519::verify_operator_message`. Pubkey, signature, and
-    message must reside in that Ed25519 instruction.
+    message must reside in that Ed25519 instruction. Tests:
+    `rejects_finalize_without_adjacent_ed25519_instruction`,
+    `rejects_ed25519_after_finalize`,
+    `rejects_instruction_inserted_between_ed25519_and_finalize`,
+    `accepts_adjacent_ed25519_then_finalize`.
 
 14. **Zero ciphertext hashes are rejected.** `require_ct_hash` on
     create, submit, and finalize result. Test:
     `zero_ciphertext_ref_rejected`.
 
 15. **Pause blocks create_account, submit, and finalize.** It does
-    not block cancel or expire (verified by reading those
-    handlers — they have no `paused` check).
+    not block cancel or expire. Tests: `pause_blocks_create_submit_and_finalize`,
+    `pause_permits_cancel`, `pause_permits_expire`.
 
 16. **Owner is the only submitter and canceller.** Expire and
     finalize accept any payer.
@@ -1128,6 +1136,62 @@ guarantees.
 - Input hashes correspond to well-formed TFHE ciphertexts of
   claimed values.
 - Config.authority is a decentralized governance body.
+
+### 8.2 Executable Security Invariants
+
+Phase 3B turns the current (not desired) invariants above into
+adversarial regression tests. Tests prove that hostile variants fail
+for the reason the program or client actually enforces. They do not
+prove FHE evaluation correctness.
+
+**Now covered by executable tests**
+
+| Phase 3A concern | Enforced behavior | Representative tests |
+| --- | --- | --- |
+| Result / request replay | A result signed for Request A cannot finalize Request B (same account, different nonce; different ConfidentialAccount; different Config/mint). Coordinator rebuilds `encode_result` from the target accounts. | `rejects_cross_request_result_replay`, `rejects_cross_account_result_substitution`, `rejects_cross_config_result_substitution` |
+| Result mutation | Changing `result_hash` in finalize args, `request_digest` in the signed message, `result_type`, `circuit_id`, or `params_hash` in the signed domain is rejected. `params_hash` is already in `RequestBinding` / `SOLFHE-CTL-REQ-V1`; there is no params-update instruction. | `wrong_result_digest_rejected`, `rejects_mutated_request_digest_in_signed_message`, `rejects_wrong_result_type`, `rejects_wrong_circuit_id`, `rejects_mutated_params_hash_in_signed_domain` |
+| Native Ed25519 + adjacency | Finalize requires a native Ed25519 instruction immediately before it, over `encode_result`, by `Config.operator`. Missing, reversed, or interrupted adjacency fails. A valid adjacent pair still succeeds. | `rejects_finalize_without_adjacent_ed25519_instruction`, `rejects_ed25519_after_finalize`, `rejects_instruction_inserted_between_ed25519_and_finalize`, `rejects_wrong_signed_message`, `rejects_corrupted_ed25519_signature`, `accepts_adjacent_ed25519_then_finalize` |
+| Relayer vs operator | Any payer may submit a valid operator attestation. A payer-signed result is not FHE authority. Client instruction arrays keep Ed25519 immediately before finalize and are built from a precomputed operator pubkey/signature (no operator `Keypair`). Direct and Relayer builders share the same verify/finalize payload. | `relayer_payer_can_finalize_with_operator_attestation`, `relayer_payer_does_not_replace_fhe_operator`, `direct_and_relayer_transports_share_prepared_finalize_payload`, `relayer_instruction_builder_accepts_precomputed_operator_signature` |
+| Request lifecycle | Pending finalize succeeds. Finalized / Cancelled / Expired cannot be finalized again. Cancel and expire of a Finalized request fail. One pending request per account. Cancel/expire clear `pending_request` and do not write an FHE result. | `successful_finalize_state_invariants_and_duplicate_is_stable`, `rejects_cancel_of_finalized_request`, `rejects_expire_of_finalized_request`, `second_active_request_rejected`, `cancel_clears_pending_without_committing_fhe_result`, `expire_clears_pending_without_committing_fhe_result` |
+| Operator / key rotation | After `rotate_operator`, a previously valid operator-A signature fails closed (`InvalidOperatorEpoch`). After `set_key_version`, pending finalize and new submit on the unmigrated account fail closed. Accounts are not auto-migrated. | `rejects_operator_signature_after_operator_rotation`, `wrong_operator_epoch_rejected`, `wrong_key_version_rejected`, `submit_rejected_after_config_key_version_change` |
+| Pause | Pause blocks create/submit/finalize and still allows cancel/expire. | `pause_blocks_create_submit_and_finalize`, `pause_permits_cancel`, `pause_permits_expire` |
+| Post-Relayer state | HTTP `confirmed` is not sufficient. Client requires Finalized, matching `result_hash` / `result_digest`, cleared `pending_request`, and `state_version == prior + 1`. | `confirmed_relayer_job_requires_authoritative_finalized_request`, `post_finalize_verification_is_shared_and_checks_lock_release` |
+| Ciphertext integrity / availability | Content-addressed `BlobStore` rejects missing files, mutated bytes, and a different blob substituted under the expected hash. This is not a ciphertext ACL. | `missing_ciphertext_blob_is_rejected`, `modified_ciphertext_is_rejected`, `different_ciphertext_cannot_substitute_for_referenced_hash` |
+
+**Rotation operational consequence (unchanged protocol)**
+
+A Pending Request retains the `operator_epoch` copied at submit.
+`rotate_operator` may later change `Config.operator` and increment
+`Config.operator_epoch`. The Request does not snapshot an operator
+public key that would remain independently valid across that
+rotation. Finalize compares the Request's stored epoch to the current
+Config epoch and fails closed, so a previously valid operator-A
+attestation cannot finalize after rotation. Recovery under the
+current protocol is cancel (owner) or expire (any payer after
+`expiry_slot`). `set_key_version` likewise updates Config only;
+`ConfidentialAccount.key_version` is not migrated. Snapshotting an
+operator pubkey onto Request, or adding account key migration, would
+be a protocol design change.
+
+**Relayer adjacency**
+
+The coordinator still fails closed if Ed25519 is missing, follows
+finalize, or is separated by another instruction. The client refuses
+to POST a non-adjacent instruction array. That protects *this*
+repository's generated payload. It does not mean the OpenZeppelin
+Relayer product guarantees adjacency after its own transaction
+construction.
+
+**Still architectural / trusted (not made “proven” by these tests)**
+
+- Operator honesty: a valid signature authenticates the signer, not
+  the TFHE evaluation.
+- Single `Config.operator`; no quorum or threshold FHE.
+- Local blob durability and access control.
+- `params_hash` has no management rotation instruction.
+- `InitializeConfig.mint` remains an identity pubkey, not Token-2022
+  validation.
+- Program upgrade authority and Config.authority remain trusted.
 
 ---
 

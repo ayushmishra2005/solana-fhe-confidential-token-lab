@@ -27,7 +27,7 @@ use crate::relayer::{
     instruction_to_spec, instructions_to_specs, require_ed25519_immediately_before_finalize,
     require_ed25519_immediately_before_finalize_specs, ED25519_PROGRAM_ID_STR,
 };
-use crate::{finalize_ixs_with_signature, PROGRAM_ID};
+use crate::{finalize_ixs, finalize_ixs_with_signature, PROGRAM_ID};
 
 const BALANCE: [u8; 32] = [0xb1; 32];
 const AMOUNT: [u8; 32] = [0xa1; 32];
@@ -133,14 +133,28 @@ impl Fixture {
     }
 
     fn into_verified(self) -> VerifiedRequest {
-        let binding = self.binding();
+        self.verified()
+    }
+
+    fn verified(&self) -> VerifiedRequest {
+        self.verified_with(self.request.clone(), self.account.clone())
+    }
+
+    fn verified_with(&self, request: Request, account: ConfidentialAccount) -> VerifiedRequest {
+        let binding = reconstruct_request_binding(
+            &self.config,
+            self.config_address,
+            &request,
+            self.account_address,
+            self.request_address,
+        );
         VerifiedRequest {
             config_address: self.config_address,
-            config: self.config,
+            config: self.config.clone(),
             account_address: self.account_address,
-            account: self.account,
+            account,
             request_address: self.request_address,
-            request: self.request,
+            request,
             binding,
         }
     }
@@ -745,4 +759,181 @@ fn prepared_finalize_uses_relayer_payer_and_keeps_operator_in_ed25519() {
         &parsed.operator
     ));
     assert_ne!(relayer.to_bytes(), parsed.operator);
+}
+
+#[test]
+fn rejects_result_file_with_mismatched_request_digest() {
+    let fixture = Fixture::pending();
+    let cached = fixture.binding();
+    let mut parsed = signed_result(&fixture).1;
+    parsed.request_digest[0] ^= 1;
+    let err = validate_finalize_consistency(&fixture.into_verified(), Some(&cached), &parsed)
+        .expect_err("request_digest mismatch");
+    assert!(err.to_string().contains("request_digest"), "{err}");
+}
+
+#[test]
+fn rejects_result_file_with_mismatched_result_digest() {
+    let fixture = Fixture::pending();
+    let cached = fixture.binding();
+    let mut parsed = signed_result(&fixture).1;
+    parsed.result_digest[0] ^= 1;
+    let err = validate_finalize_consistency(&fixture.into_verified(), Some(&cached), &parsed)
+        .expect_err("result_digest mismatch");
+    assert!(err.to_string().contains("result_digest"), "{err}");
+}
+
+#[test]
+fn rejects_wrong_result_type_in_result_file() {
+    let fixture = Fixture::pending();
+    let cached = fixture.binding();
+    let mut parsed = signed_result(&fixture).1;
+    parsed.result_type = 9;
+    let err = validate_finalize_consistency(&fixture.into_verified(), Some(&cached), &parsed)
+        .expect_err("wrong result_type");
+    assert!(err.to_string().contains("result_type"), "{err}");
+}
+
+#[test]
+fn rejects_wrong_circuit_id_in_result_file() {
+    let fixture = Fixture::pending();
+    let cached = fixture.binding();
+    let mut parsed = signed_result(&fixture).1;
+    parsed.circuit_id = 99;
+    let err = validate_finalize_consistency(&fixture.into_verified(), Some(&cached), &parsed)
+        .expect_err("wrong circuit_id");
+    assert!(err.to_string().contains("circuit_id"), "{err}");
+}
+
+#[test]
+fn confirmed_relayer_job_requires_authoritative_finalized_request() {
+    let fixture = Fixture::pending();
+    let (_, parsed) = signed_result(&fixture);
+    let prepared = prepared_from_fixture(&fixture, &parsed);
+
+    let err = verify_authoritative_finalized(&fixture.verified(), &prepared).unwrap_err();
+    assert!(err.to_string().contains("did not reach Finalized"), "{err}");
+
+    let mut request = fixture.request.clone();
+    let mut account = fixture.account.clone();
+    request.status = protocol::STATUS_FINALIZED;
+    request.result_hash = [0xab; 32];
+    request.result_digest = prepared.result_digest;
+    account.pending_request = Address::default();
+    account.state_version += 1;
+    let err = verify_authoritative_finalized(&fixture.verified_with(request, account), &prepared)
+        .unwrap_err();
+    assert!(err.to_string().contains("result_hash"), "{err}");
+
+    request = fixture.request.clone();
+    account = fixture.account.clone();
+    request.status = protocol::STATUS_FINALIZED;
+    request.result_hash = parsed.result_hash;
+    request.result_digest = [0xcd; 32];
+    account.pending_request = Address::default();
+    account.state_version += 1;
+    let err = verify_authoritative_finalized(&fixture.verified_with(request, account), &prepared)
+        .unwrap_err();
+    assert!(err.to_string().contains("result_digest"), "{err}");
+
+    request = fixture.request.clone();
+    account = fixture.account.clone();
+    request.status = protocol::STATUS_FINALIZED;
+    request.result_hash = parsed.result_hash;
+    request.result_digest = prepared.result_digest;
+    account.pending_request = Address::default();
+    let err = verify_authoritative_finalized(&fixture.verified_with(request, account), &prepared)
+        .unwrap_err();
+    assert!(err.to_string().contains("state_version"), "{err}");
+
+    request = fixture.request.clone();
+    account = fixture.account.clone();
+    request.status = protocol::STATUS_FINALIZED;
+    request.result_hash = parsed.result_hash;
+    request.result_digest = prepared.result_digest;
+    account.pending_request = Address::default();
+    account.state_version = prepared.prior_state_version + 2;
+    let err = verify_authoritative_finalized(&fixture.verified_with(request, account), &prepared)
+        .unwrap_err();
+    assert!(err.to_string().contains("state_version"), "{err}");
+}
+
+#[test]
+fn direct_and_relayer_transports_share_prepared_finalize_payload() {
+    let fixture = Fixture::pending();
+    let (binding, parsed) = signed_result(&fixture);
+    let prepared = prepared_from_fixture(&fixture, &parsed);
+    let direct_payer = Keypair::new().pubkey();
+    let relayer_payer = Keypair::new().pubkey();
+    assert_ne!(direct_payer, relayer_payer);
+
+    let [direct_verify, direct_finalize] = prepared.instructions_for_payer(direct_payer).unwrap();
+    let [relayer_verify, relayer_finalize] =
+        prepared.instructions_for_payer(relayer_payer).unwrap();
+
+    assert_eq!(direct_verify.program_id, relayer_verify.program_id);
+    assert_eq!(direct_verify.data, relayer_verify.data);
+    assert_eq!(direct_finalize.program_id, relayer_finalize.program_id);
+    assert_eq!(direct_finalize.data, relayer_finalize.data);
+    assert_eq!(direct_finalize.accounts[0].pubkey, direct_payer);
+    assert_eq!(relayer_finalize.accounts[0].pubkey, relayer_payer);
+    assert_eq!(
+        &direct_finalize.accounts[1..],
+        &relayer_finalize.accounts[1..]
+    );
+    require_ed25519_immediately_before_finalize(&[direct_verify.clone(), direct_finalize.clone()])
+        .unwrap();
+    require_ed25519_immediately_before_finalize(&[
+        relayer_verify.clone(),
+        relayer_finalize.clone(),
+    ])
+    .unwrap();
+
+    let from_secret = finalize_ixs(
+        direct_payer,
+        fixture.config_address,
+        fixture.account_address,
+        fixture.request_address,
+        &fixture.operator,
+        &binding,
+    );
+    let from_bytes = finalize_ixs_with_signature(
+        relayer_payer,
+        fixture.config_address,
+        fixture.account_address,
+        fixture.request_address,
+        parsed.operator,
+        parsed.signature,
+        &binding,
+    );
+    assert_eq!(from_secret[0].data, from_bytes[0].data);
+    assert_eq!(from_secret[1].data, from_bytes[1].data);
+    assert_eq!(from_secret[0].data, direct_verify.data);
+    assert_eq!(from_secret[1].data, direct_finalize.data);
+}
+
+#[test]
+fn relayer_instruction_builder_accepts_precomputed_operator_signature() {
+    let fixture = Fixture::pending();
+    let (binding, parsed) = signed_result(&fixture);
+    let relayer = Keypair::new().pubkey();
+    let ixs = finalize_ixs_with_signature(
+        relayer,
+        fixture.config_address,
+        fixture.account_address,
+        fixture.request_address,
+        parsed.operator,
+        parsed.signature,
+        &binding,
+    );
+    require_ed25519_immediately_before_finalize(&ixs).unwrap();
+    assert!(ed25519_instruction_contains_operator(
+        &ixs[0],
+        &parsed.operator
+    ));
+    assert!(!ed25519_instruction_contains_operator(
+        &ixs[0],
+        &relayer.to_bytes()
+    ));
+    assert_eq!(ixs[1].accounts[0].pubkey, relayer);
 }

@@ -595,25 +595,25 @@ Verified counts on this machine:
 - 9 `confidential-protocol` tests: canonical request/result encoding,
   domain separation, per-field digest changes, golden vectors, blob
   metadata checks
-- 12 `fhe-worker` tests: real TFHE policy cases (100/25/50 true,
+- 14 `fhe-worker` tests: real TFHE policy cases (100/25/50 true,
   20/25/50 false, 100/60/50 false), equality and zero boundaries,
-  safe serialize/deserialize, modified and invalid ciphertext, wrong
-  parameter metadata, and server-key commitment checks
-- 19 `phase1-tests` program tests: initialize, create, submit,
-  finalize, cancel, expire, and substitution/replay rejects
+  safe serialize/deserialize, missing/modified/substituted ciphertext,
+  wrong parameter metadata, and server-key commitment checks
+- 44 `phase1-tests` program tests: initialize, create, submit,
+  finalize, cancel, expire, plus Phase 3B adversarial coverage for
+  replay, Ed25519 adjacency, lifecycle, pause, and rotation fail-closed
 - 1 end-to-end test: encrypt, submit, TFHE evaluate, sign, finalize,
   owner decrypt for allowed and both denied cases
 - 1 coordinator `test_id` unit test
-- 43 `confidential-lab` Devnet/RPC/Relayer tests: previous Devnet/RPC security
+- 50 `confidential-lab` Devnet/RPC/Relayer tests: previous Devnet/RPC security
   coverage plus OpenZeppelin Relayer info validation, instruction
   serialization, Ed25519/finalize adjacency, transport defaults, mock REST
-  submit/poll/error paths, Relayer confirmation/timeout hardening, and shared
-  post-finalize verification
-- 85 application tests
+  submit/poll/error paths, Relayer confirmation/timeout hardening, shared
+  post-finalize verification, and Phase 3B fail-closed chain checks
+- 119 application tests
 
-`cargo test --workspace --all-targets --all-features` reports 88 tests.
-The additional 3 are Anchor-generated IDL print tests. This is a count
-clarification only; Phase 3 did not add tests.
+`cargo test --workspace --all-targets --all-features` reports 122 tests.
+The additional 3 are Anchor-generated IDL print tests.
 
 ## Measurements
 
@@ -716,7 +716,8 @@ worker-produced signature and acts as transaction infrastructure.
 
 ### Phase 3 — Confidential-Contract Security Mapping
 
-Implemented as a security architecture and threat-model mapping.
+Implemented: security mapping + executable adversarial regression
+coverage.
 
 - maps OpenZeppelin Confidential Contracts / Zama FHEVM security
   assumptions to SVM-native semantics
@@ -724,7 +725,12 @@ Implemented as a security architecture and threat-model mapping.
   result authentication, key/version handling and ciphertext availability
 - separates directly applicable patterns from EVM-specific assumptions
 - documents residual trust in the FHE operator
+- encodes current invariants as local adversarial regression tests
+  (replay, Ed25519 adjacency, lifecycle, rotation fail-closed,
+  Relayer/operator separation, post-finalization chain verification,
+  ciphertext hash integrity)
 - does not change the on-chain protocol
+- is not a claim that the prototype is production hardened
 
 [Confidential Contracts / FHEVM → SVM Security Mapping](docs/confidential-contracts-svm-security-mapping.md)
 

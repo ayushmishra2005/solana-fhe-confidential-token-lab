@@ -508,6 +508,40 @@ mod tests {
     }
 
     #[test]
+    fn missing_ciphertext_blob_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path()).unwrap();
+        match store.get(&[0x11; 32]) {
+            Err(WorkerError::Io(msg)) => {
+                assert!(
+                    !msg.is_empty(),
+                    "missing blob must surface a clear IO error"
+                );
+            }
+            other => panic!("expected IO error for missing ciphertext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn different_ciphertext_cannot_substitute_for_referenced_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path()).unwrap();
+        let hash_a = store.put(b"ciphertext-a").unwrap();
+        let hash_b = store.put(b"ciphertext-b").unwrap();
+        assert_ne!(hash_a, hash_b);
+        assert_eq!(store.get(&hash_a).unwrap(), b"ciphertext-a");
+        assert_eq!(store.get(&hash_b).unwrap(), b"ciphertext-b");
+        assert_ne!(store.get(&hash_b).unwrap(), b"ciphertext-a");
+
+        let path_a = dir.path().join(hex::encode(hash_a));
+        fs::write(&path_a, b"ciphertext-b").unwrap();
+        match store.get(&hash_a) {
+            Err(err) => assert!(matches!(err, WorkerError::HashMismatch)),
+            Ok(bytes) => panic!("substituted bytes must not resolve as {bytes:?}"),
+        }
+    }
+
+    #[test]
     fn modified_ciphertext_is_rejected() {
         with_server(|m| {
             let dir = tempfile::tempdir().unwrap();
