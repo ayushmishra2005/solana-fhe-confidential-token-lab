@@ -609,7 +609,11 @@ Verified counts on this machine:
   serialization, Ed25519/finalize adjacency, transport defaults, mock REST
   submit/poll/error paths, Relayer confirmation/timeout hardening, and shared
   post-finalize verification
-- 85 tests total
+- 85 application tests
+
+`cargo test --workspace --all-targets --all-features` reports 88 tests.
+The additional 3 are Anchor-generated IDL print tests. This is a count
+clarification only; Phase 3 did not add tests.
 
 ## Measurements
 
@@ -712,25 +716,17 @@ worker-produced signature and acts as transaction infrastructure.
 
 ### Phase 3 — Confidential-Contract Security Mapping
 
-Planned research and documentation. This phase studies OpenZeppelin
-Confidential Contracts and Zama/FHEVM security patterns and maps
-relevant ideas to SVM-native semantics rather than directly porting
-EVM abstractions.
+Implemented as a security architecture and threat-model mapping.
 
-Topics:
+- maps OpenZeppelin Confidential Contracts / Zama FHEVM security
+  assumptions to SVM-native semantics
+- documents authorization, lifecycle, replay, asynchronous finalization,
+  result authentication, key/version handling and ciphertext availability
+- separates directly applicable patterns from EVM-specific assumptions
+- documents residual trust in the FHE operator
+- does not change the on-chain protocol
 
-- encrypted-value authorization
-- PDA/account ownership and ACL equivalents
-- request/result binding
-- replay and stale-state resistance
-- relayer trust boundaries
-- key/operator rotation
-- lifecycle/cancellation
-- off-chain computation integrity
-- upgrade/governance assumptions
-
-The goal is to determine which FHEVM security patterns transfer
-cleanly to Solana and which require a different SVM-native design.
+[Confidential Contracts / FHEVM → SVM Security Mapping](docs/confidential-contracts-svm-security-mapping.md)
 
 ### Phase 4 — Token-2022 Confidential Interoperability
 
